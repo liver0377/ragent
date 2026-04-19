@@ -118,13 +118,17 @@ async def chat(request: ChatRequest) -> StreamingResponse:
     # 延迟导入以避免循环依赖
     from ragent.infra.ai.embedding_service import EmbeddingService
     from ragent.infra.ai.llm_service import LLMService
+    from ragent.infra.ai.models import ModelConfigManager
+    from ragent.infra.ai.model_selector import ModelSelector
     from ragent.rag.chain import RAGChain
 
     settings = get_settings()
 
-    # 构建 RAG 链路
-    llm_service = LLMService()
-    embedding_service = EmbeddingService()
+    # 构建依赖链：ModelConfigManager → ModelSelector → LLMService / EmbeddingService → RAGChain
+    config_manager = ModelConfigManager()
+    selector = ModelSelector(config_manager)
+    llm_service = LLMService(config_manager, selector)
+    embedding_service = EmbeddingService(config_manager, selector)
     chain = RAGChain(llm_service, embedding_service)
 
     # 获取异步事件迭代器
