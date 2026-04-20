@@ -414,19 +414,33 @@ async def upload_document(
             })
             continue
 
-        # 保存文件到磁盘
-        file_path = os.path.join(upload_dir, filename)
+        # 去重检查：同知识库下同名文档是否已存在
+        dup_result = await db.execute(
+            select(KnowledgeDocument).where(
+                KnowledgeDocument.kb_id == knowledge_base_id,
+                KnowledgeDocument.doc_name == filename,
+            )
+        )
+        if dup_result.scalar_one_or_none() is not None:
+            results.append({
+                "filename": filename,
+                "status": "SKIPPED",
+                "message": f"文档 {filename} 已存在于知识库中，跳过重复上传",
+            })
+            continue
+
+        # 保存文件到磁盘（用 doc_id 前缀避免同名覆盖）
+        doc_id = generate_id()
+        safe_filename = f"{doc_id}_{filename}"
+        file_path = os.path.join(upload_dir, safe_filename)
         with open(file_path, "wb") as f:
             content = await upload_file.read()
             f.write(content)
-
-        # 创建文档记录
-        doc_id = generate_id()
         doc = KnowledgeDocument(
             id=doc_id,
             kb_id=knowledge_base_id,
             doc_name=filename,
-            file_url=f"/data/pdfs/{filename}",
+            file_url=f"/data/pdfs/{safe_filename}",
             file_type=file_ext,
             enabled=True,
             chunk_count=0,
@@ -443,7 +457,7 @@ async def upload_document(
             task_id=task_id,
             pipeline_id=knowledge_base_id,
             source_type="local",
-            source_location=filename,
+            source_location=safe_filename,
         )
 
         logger.info(
