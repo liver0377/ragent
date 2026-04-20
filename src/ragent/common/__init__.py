@@ -15,6 +15,7 @@ from ragent.common.trace import (
     TraceSpan,
     get_current_span,
     get_trace_id,
+    get_tracer,
     rag_trace_node,
     rag_trace_root,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "TraceSpan",
     "get_current_span",
     "get_trace_id",
+    "get_tracer",
     "rag_trace_node",
     "rag_trace_root",
 ]

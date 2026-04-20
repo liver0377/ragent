@@ -19,7 +19,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from ragent.common.sse import SSEEvent, SSEEventType, sse_content, sse_error, sse_finish, sse_meta
-from ragent.common.trace import TraceSpan, _trace_context, _trace_id_var, _log_span
+from ragent.common.trace import TraceSpan, _trace_context, _trace_id_var, _log_span, get_tracer
 from ragent.infra.ai.embedding_service import EmbeddingService
 from ragent.infra.ai.llm_service import LLMService
 from ragent.rag.intent.intent_classifier import IntentClassifier, IntentNode

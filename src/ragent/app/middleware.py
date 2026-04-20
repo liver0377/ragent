@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -22,7 +21,7 @@ from starlette.responses import JSONResponse, Response
 from ragent.common.context import UserContext, set_user_context, clear_user_context
 from ragent.common.logging import get_logger
 from ragent.common.response import Result
-from ragent.common.trace import _trace_id_var
+from ragent.common.trace import _trace_id_var, get_tracer
 
 logger: logging.Logger = get_logger(__name__)
 
@@ -45,7 +44,7 @@ class TraceMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-        """拦截请求，注入 trace_id。
+        """拦截请求，用 OTel span 注入 trace_id。
 
         Args:
             request:  Starlette 请求对象。
@@ -54,19 +53,32 @@ class TraceMiddleware(BaseHTTPMiddleware):
         Returns:
             处理后的响应对象。
         """
-        # 优先从请求头获取（支持上游传播）
-        trace_id: str = request.headers.get("X-Trace-Id", "") or uuid.uuid4().hex
+        tracer = get_tracer()
+        span_name = f"HTTP {request.method} {request.url.path}"
 
-        # 设置到 request state 和 ContextVar
-        request.state.trace_id = trace_id
-        token = _trace_id_var.set(trace_id)
+        with tracer.start_as_current_span(span_name) as otel_span:
+            # 从请求头或新生成 trace_id
+            incoming_tid = request.headers.get("X-Trace-Id", "")
+            trace_id: str = incoming_tid or format(otel_span.get_span_context().trace_id, "032x")
 
-        try:
-            response: Response = await call_next(request)
-            response.headers["X-Trace-Id"] = trace_id
-            return response
-        finally:
-            _trace_id_var.reset(token)
+            request.state.trace_id = trace_id
+            _trace_id_var.set(trace_id)
+
+            otel_span.set_attribute("http.method", request.method)
+            otel_span.set_attribute("http.url", str(request.url))
+            otel_span.set_attribute("trace_id", trace_id)
+
+            try:
+                response: Response = await call_next(request)
+                response.headers["X-Trace-Id"] = trace_id
+                otel_span.set_attribute("http.status_code", response.status_code)
+                return response
+            except Exception as exc:
+                otel_span.set_attribute("error", True)
+                otel_span.record_exception(exc)
+                raise
+            finally:
+                _trace_id_var.set("")
 
 
 # ---------------------------------------------------------------------------
