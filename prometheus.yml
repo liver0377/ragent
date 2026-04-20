@@ -1,0 +1,16 @@
+# ===========================================================================
+# Ragent Prometheus 配置
+# ===========================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "ragent-api"
+    scrape_interval: 15s
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["ragent-api:8000"]
+        labels:
+          service: "ragent-api"
+          env: "production"

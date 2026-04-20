@@ -1,56 +1,179 @@
-version: '3.8'
+# ===========================================================================
+# Ragent Docker Compose — 完整部署编排
+# 服务: redis, postgres, ragent-api, ragent-worker, ragent-web, prometheus, grafana
+# ===========================================================================
+
 services:
+  # ---------------------------------------------------------------------------
+  # Redis 7 — 缓存(db0) + Celery broker(db1) + Celery result backend(db2)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ragent-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --save 60 1000
+      --save 300 100
+      --appendonly yes
+      --databases 16
+    volumes:
+      - redis-data:/data
+    networks:
+      - ragent-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 — 用户与业务数据持久化
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: ragent-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ragent
+      POSTGRES_PASSWORD: ragent_secret_2026
+      POSTGRES_DB: ragent
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - ragent-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragent -d ragent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Ragent API — FastAPI 服务
+  # ---------------------------------------------------------------------------
   ragent-api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ragent-api
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      - RAGENT_DATABASE_URL=postgresql+asyncpg://ragent:ragent123@postgres:5432/ragent
-      - RAGENT_REDIS_URL=redis://redis:6379/0
-      - RAGENT_CELERY_BROKER_URL=redis://redis:6379/1
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://ragent:ragent_secret_2026@postgres:5432/ragent
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
     depends_on:
-      - postgres
-      - redis
-    command: uvicorn ragent.main:app --host 0.0.0.0 --port 8000 --workers 4
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ragent-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    command: ["gunicorn", "ragent.main:app", "-c", "deploy/gunicorn.conf.py"]
 
+  # ---------------------------------------------------------------------------
+  # Ragent Worker — Celery 异步任务 Worker
+  # ---------------------------------------------------------------------------
   ragent-worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ragent-worker
+    restart: unless-stopped
     environment:
-      - RAGENT_DATABASE_URL=postgresql+asyncpg://ragent:ragent123@postgres:5432/ragent
-      - RAGENT_REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql+asyncpg://ragent:ragent_secret_2026@postgres:5432/ragent
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
     depends_on:
-      - postgres
-      - redis
-      - rabbitmq
-    command: celery -A ragent.common.celery_app worker -l info
-
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: ragent
-      POSTGRES_USER: ragent
-      POSTGRES_PASSWORD: ragent123
-    ports:
-      - "5432:5432"
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["celery", "-A", "ragent.common.celery_worker", "worker", "-l", "info", "-c", "4", "-Q", "ingestion.task,ingestion.chunk,rag.feedback,celery"]
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./tests/fixtures/pdfs:/data/pdfs:ro
+    networks:
+      - ragent-net
 
-  redis:
-    image: redis:7-alpine
+  # ---------------------------------------------------------------------------
+  # Ragent Web — 前端 (React + Nginx)
+  # ---------------------------------------------------------------------------
+  ragent-web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ragent-web
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "80:80"
+    depends_on:
+      - ragent-api
+    networks:
+      - ragent-net
+
+  # ---------------------------------------------------------------------------
+  # Prometheus — 指标采集
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: ragent-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
     volumes:
-      - redisdata:/data
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - ragent-net
+    depends_on:
+      - ragent-api
 
-  rabbitmq:
-    image: rabbitmq:3-management
+  # ---------------------------------------------------------------------------
+  # Grafana — 可视化仪表盘
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: ragent-grafana
+    restart: unless-stopped
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "3000:3000"
     environment:
-      RABBITMQ_DEFAULT_USER: ragent
-      RABBITMQ_DEFAULT_PASS: ragent123
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - ragent-net
+    depends_on:
+      - prometheus
 
+# ===========================================================================
+# 网络
+# ===========================================================================
+networks:
+  ragent-net:
+    driver: bridge
+    name: ragent-net
+
+# ===========================================================================
+# 卷
+# ===========================================================================
 volumes:
-  pgdata:
-  redisdata:
+  redis-data:
+    name: ragent-redis-data
+  postgres-data:
+    name: ragent-postgres-data
+  grafana-data:
+    name: ragent-grafana-data

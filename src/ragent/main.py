@@ -24,6 +24,7 @@ from ragent.app.middleware import (
     RequestContextMiddleware,
     TraceMiddleware,
 )
+from ragent.app.auth_router import router as auth_router
 from ragent.app.router import router
 from ragent.common.logging import get_logger, setup_logging
 from ragent.config.settings import get_settings
@@ -42,12 +43,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     启动阶段：
         1. 初始化结构化日志
-        2. 尝试初始化 Redis 连接池（失败不阻塞启动）
-        3. 输出启动日志
+        2. 初始化 PostgreSQL 数据库连接
+        3. 尝试初始化 Redis 连接池（失败不阻塞启动）
+        4. 输出启动日志
 
     关闭阶段：
-        1. 关闭 Redis 连接池
-        2. 输出关闭日志
+        1. 关闭 PostgreSQL 数据库连接
+        2. 关闭 Redis 连接池
+        3. 输出关闭日志
 
     Args:
         app: FastAPI 应用实例。
@@ -57,6 +60,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ---- 启动 ----
     setup_logging(level=settings.LOG_LEVEL)
     logger.info("Ragent 服务启动中 | version=%s | debug=%s", settings.APP_VERSION, settings.DEBUG)
+
+    # 初始化 PostgreSQL
+    try:
+        from ragent.infra.database import init_db
+
+        await init_db()
+        logger.info("PostgreSQL 数据库初始化完成")
+    except Exception as exc:
+        logger.warning("PostgreSQL 初始化失败（非致命）: %s", exc)
 
     # 尝试初始化 Redis（失败不阻塞）
     redis_manager = None
@@ -73,6 +85,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     # ---- 关闭 ----
+    # 关闭 PostgreSQL
+    try:
+        from ragent.infra.database import close_db
+
+        await close_db()
+        logger.info("PostgreSQL 数据库连接已关闭")
+    except Exception as exc:
+        logger.warning("PostgreSQL 关闭异常: %s", exc)
+
     if redis_manager is not None:
         try:
             await redis_manager.close()
@@ -114,7 +135,17 @@ def create_app() -> FastAPI:
     app.add_middleware(TraceMiddleware)
 
     # 路由挂载
+    app.include_router(auth_router)
     app.include_router(router)
+
+    # Prometheus 指标 —— 暴露 /metrics 端点
+    from prometheus_fastapi_instrumentator import Instrumentator
+
+    Instrumentator(
+        should_group_status_codes=True,
+        should_ignore_untemplated=True,
+        excluded_handlers=["/api/v1/health"],
+    ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=True)
 
     return app
 

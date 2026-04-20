@@ -70,16 +70,14 @@ def _configure_app(app: Celery) -> None:
         enable_utc=True,
     )
 
+    # 自动发现各模块下的 tasks.py
+    app.autodiscover_tasks(["ragent.ingestion"])
+
     logger.info(
         "Celery 应用已配置: broker=%s, backend=%s",
         broker_url,
         result_backend,
     )
-
-
-# ---------------------------------------------------------------------------
-#  公共访问器
-# ---------------------------------------------------------------------------
 
 _configured: bool = False
 

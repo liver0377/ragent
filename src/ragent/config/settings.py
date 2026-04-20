@@ -44,12 +44,12 @@ class Settings(BaseSettings):
         description="API base URL",
     )
     GLM_MODEL: str = Field(
-        default="glm-4-flash",
-        description="默认聊天模型",
+        default="openai/glm-4-flash",
+        description="默认聊天模型（litellm 格式，需带 provider 前缀）",
     )
     EMBEDDING_MODEL: str = Field(
-        default="embedding-3",
-        description="Embedding 模型",
+        default="openai/embedding-3",
+        description="Embedding 模型（litellm 格式，需带 provider 前缀）",
     )
 
     # ==================== 基础设施配置 ====================
@@ -58,6 +58,11 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         description="Redis 连接URL",
     )
+    DATABASE_URL: str = Field(
+        default="postgresql+asyncpg://ragent:ragent@localhost:5432/ragent",
+        description="PostgreSQL 异步连接URL（asyncpg 驱动）",
+    )
+
     MILVUS_HOST: str = Field(
         default="localhost",
         description="Milvus 主机",
@@ -98,11 +103,26 @@ class Settings(BaseSettings):
         description="API 路由前缀",
     )
 
+    # ==================== JWT 认证配置 ====================
+
+    JWT_SECRET_KEY: str = Field(
+        default="ragent-jwt-secret-change-in-production-2026",
+        description="JWT 签名密钥（生产环境务必更换）",
+    )
+    JWT_ALGORITHM: str = Field(
+        default="HS256",
+        description="JWT 签名算法",
+    )
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
+        default=1440,
+        description="Access Token 过期时间（分钟），默认 24 小时",
+    )
+
     # ==================== LLM 调用配置 ====================
 
     LLM_TIMEOUT: int = Field(
         default=60,
-        description="LLM 调用超时秒数",
+        description="LLM 请求超时秒数",
     )
     LLM_MAX_RETRIES: int = Field(
         default=3,
@@ -113,7 +133,7 @@ class Settings(BaseSettings):
         description="向量维度",
     )
 
-    # ==================== 业务配置 ====================
+    # ==================== 文本处理配置 ====================
 
     CHUNK_SIZE: int = Field(
         default=512,
@@ -121,7 +141,7 @@ class Settings(BaseSettings):
     )
     CHUNK_OVERLAP: int = Field(
         default=64,
-        description="分块重叠大小",
+        description="分块重叠字符数",
     )
     RETRIEVAL_TOP_K: int = Field(
         default=5,
@@ -129,7 +149,7 @@ class Settings(BaseSettings):
     )
     RATE_LIMIT_MAX_CONCURRENT: int = Field(
         default=10,
-        description="最大并发数",
+        description="最大并发请求数",
     )
     RATE_LIMIT_WINDOW_SECONDS: int = Field(
         default=60,
@@ -141,7 +161,7 @@ class Settings(BaseSettings):
     )
     SESSION_SUMMARY_THRESHOLD: int = Field(
         default=6,
-        description="会话摘要阈值",
+        description="会话摘要触发轮次",
     )
 
 
