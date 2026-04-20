@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from ragent.app.middleware import (
     ExceptionHandlerMiddleware,
@@ -128,6 +129,19 @@ def create_app() -> FastAPI:
         version=settings.APP_VERSION,
         lifespan=lifespan,
     )
+
+    # CORS 配置
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS.split(",") if hasattr(settings, "CORS_ORIGINS") else ["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Rate Limiting（在最外层，优先拦截超限请求）
+    from ragent.app.rate_limit import RateLimitMiddleware
+    app.add_middleware(RateLimitMiddleware)
 
     # 中间件注册（最后添加的最先执行）
     app.add_middleware(ExceptionHandlerMiddleware)

@@ -85,10 +85,15 @@ class Settings(BaseSettings):
     )
     CELERY_RESULT_BACKEND: str = Field(
         default="redis://localhost:6379/2",
-        description="Celery Result Backend",
+        description="Celery 结果后端",
     )
 
     # ==================== 应用配置 ====================
+
+    CORS_ORIGINS: str = Field(
+        default="*",
+        description="CORS 允许的源，多个用逗号分隔",
+    )
 
     APP_NAME: str = Field(
         default="ragent",

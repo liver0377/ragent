@@ -22,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -93,6 +94,11 @@ class User(TimestampMixin, Base):
         BigInteger, ForeignKey("t_department.id"), nullable=True,
     )
 
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_user_department_id", "department_id"),
+    )
+
     # ---- 关系 ----
     department: Mapped[Department | None] = relationship(back_populates="users")
     conversations: Mapped[list[Conversation]] = relationship(
@@ -118,6 +124,12 @@ class Conversation(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String, nullable=False, default="新对话")
     last_message_time: Mapped[datetime.datetime | None] = mapped_column(
         DateTime, nullable=True,
+    )
+
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_conversation_user_id", "user_id"),
+        Index("ix_conversation_user_id_id", "user_id", "id"),
     )
 
     # ---- 关系 ----
@@ -150,6 +162,11 @@ class Message(TimestampMixin, Base):
     thinking_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     thinking_duration: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_message_conversation_id", "conversation_id"),
+    )
+
     # ---- 关系 ----
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
     user: Mapped[User] = relationship(back_populates="messages")
@@ -173,6 +190,11 @@ class ConversationSummary(TimestampMixin, Base):
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     last_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_conv_summary_conversation_id", "conversation_id"),
+    )
 
     # ---- 关系 ----
     conversation: Mapped[Conversation] = relationship(back_populates="summaries")
@@ -220,6 +242,11 @@ class KnowledgeBase(TimestampMixin, Base):
         BigInteger, ForeignKey("t_department.id"), nullable=True,
     )
 
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_kb_department_id", "department_id"),
+    )
+
     # ---- 关系 ----
     department: Mapped[Department | None] = relationship(back_populates="knowledge_bases")
     documents: Mapped[list[KnowledgeDocument]] = relationship(
@@ -253,6 +280,12 @@ class KnowledgeDocument(TimestampMixin, Base):
     chunk_strategy: Mapped[str] = mapped_column(String, nullable=False, default="fixed")
     pipeline_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     process_mode: Mapped[str] = mapped_column(String, nullable=False, default="auto")
+
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_kd_kb_id", "kb_id"),
+        Index("ix_kd_kb_id_doc_name", "kb_id", "doc_name"),
+    )
 
     # ---- 关系 ----
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="documents")
@@ -288,6 +321,12 @@ class KnowledgeChunk(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_kc_doc_id", "doc_id"),
+        Index("ix_kc_kb_id", "kb_id"),
+    )
+
     # ---- 关系 ----
     knowledge_base: Mapped[KnowledgeBase] = relationship(back_populates="chunks")
     document: Mapped[KnowledgeDocument] = relationship(back_populates="chunks")
@@ -312,6 +351,11 @@ class DocumentChunkLog(Base):
     persist_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_dcl_doc_id", "doc_id"),
+    )
 
     # ---- 关系 ----
     document: Mapped[KnowledgeDocument] = relationship(back_populates="chunk_logs")
@@ -419,6 +463,11 @@ class RagTraceNode(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     extra_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # ---- 索引 ----
+    __table_args__ = (
+        Index("ix_trace_node_trace_id", "trace_id"),
+    )
 
     # ---- 关系 ----
     trace_run: Mapped[RagTraceRun] = relationship(back_populates="nodes")
