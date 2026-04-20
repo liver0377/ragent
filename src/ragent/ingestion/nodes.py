@@ -688,10 +688,11 @@ class EnricherNode(IngestionNode):
 # ---------------------------------------------------------------------------
 
 class IndexerNode(IngestionNode):
-    """索引写入节点 —— 将分块数据写入向量存储。
+    """索引写入节点 —— 将分块数据向量化并写入 PostgreSQL（pgvector）。
 
-    当前为 Mock 实现，预留 Milvus/pgvector 集成接口。
-    实际写入时需要 ``embedding_service`` 对分块进行向量化。
+    使用 ``embedding_service`` 对分块文本进行向量化，然后通过 asyncpg
+    将 chunk 记录（含 embedding 向量）批量插入 ``t_knowledge_chunk`` 表。
+    需要上下文提供 ``kb_id`` 和 ``doc_id`` 以正确关联知识库和文档。
     """
 
     @property
@@ -715,40 +716,145 @@ class IndexerNode(IngestionNode):
         ctx: IngestionContext,
         settings: dict[str, Any] | None = None,
     ) -> None:
-        """将分块写入向量存储（当前为 Mock 实现）。
+        """将分块向量化并写入数据库。
 
-        若提供了 ``embedding_service``，则对每个分块进行向量化；
-        否则跳过向量化步骤。
+        流程：
+            1. 检查上下文中是否有分块和必要的 kb_id / doc_id
+            2. 使用 embedding_service 对分块文本进行批量向量化
+            3. 通过 asyncpg 批量插入 t_knowledge_chunk 表
 
         Args:
-            ctx:      管线执行上下文（需要 ``chunks``）。
+            ctx:      管线执行上下文（需要 ``chunks``, ``kb_id``, ``doc_id``）。
             settings: 节点配置（可选）。
         """
         if not ctx.chunks:
             logger.warning("IndexerNode: 没有分块需要索引")
             return
 
-        # 向量化（如果提供了嵌入服务）
-        if self._embedding_service is not None:
-            texts = [chunk.content for chunk in ctx.chunks]
-            try:
-                vectors = await self._embedding_service.embed_batch(texts)
-                for chunk, vector in zip(ctx.chunks, vectors):
-                    chunk.vector = vector
-                logger.info("IndexerNode: 向量化完成, 分块数量=%d", len(ctx.chunks))
-            except Exception as exc:
-                logger.warning("IndexerNode: 向量化失败: %s", exc)
+        kb_id = ctx.kb_id
+        doc_id = ctx.doc_id
+        if kb_id is None or doc_id is None:
+            logger.warning(
+                "IndexerNode: 缺少 kb_id 或 doc_id，跳过数据库写入 "
+                "(kb_id=%s, doc_id=%s)",
+                kb_id, doc_id,
+            )
+            # 仍然做向量化，只是不写 DB
+            await self._vectorize_chunks(ctx)
+            return
 
-        # Mock 写入 —— 记录日志，预留实际存储接口
-        logger.info(
-            "IndexerNode: [Mock] 写入 %d 个分块到向量存储, 任务ID=%d",
-            len(ctx.chunks),
-            ctx.task_id,
-        )
+        # 向量化
+        await self._vectorize_chunks(ctx)
+
+        # 批量写入数据库
+        await self._write_chunks_to_db(ctx, kb_id, doc_id)
+
+    async def _vectorize_chunks(self, ctx: IngestionContext) -> None:
+        """对分块进行向量化。
+
+        如果未通过构造函数提供 embedding_service，则自动创建一个。
+
+        Args:
+            ctx: 管线执行上下文。
+        """
+        if self._embedding_service is None:
+            # 延迟初始化 embedding_service
+            try:
+                from ragent.infra.ai.embedding_service import EmbeddingService
+                from ragent.infra.ai.models import ModelConfigManager
+                from ragent.infra.ai.model_selector import ModelSelector
+
+                config_manager = ModelConfigManager()
+                selector = ModelSelector(config_manager)
+                self._embedding_service = EmbeddingService(config_manager, selector)
+                logger.info("IndexerNode: 自动初始化 embedding_service")
+            except Exception as exc:
+                logger.warning("IndexerNode: 无法初始化 embedding_service: %s", exc)
+                return
+
+        texts = [chunk.content for chunk in ctx.chunks]
+        try:
+            vectors = await self._embedding_service.embed_batch(texts)
+            for chunk, vector in zip(ctx.chunks, vectors):
+                chunk.vector = vector
+            logger.info("IndexerNode: 向量化完成, 分块数量=%d", len(ctx.chunks))
+        except Exception as exc:
+            logger.warning("IndexerNode: 向量化失败: %s", exc)
+
+    @staticmethod
+    async def _write_chunks_to_db(
+        ctx: IngestionContext,
+        kb_id: int,
+        doc_id: int,
+    ) -> None:
+        """将分块 + embedding 批量写入 t_knowledge_chunk 表。
+
+        使用 SQLAlchemy ORM 批量插入，保持代码库风格一致。
+
+        Args:
+            ctx:    管线执行上下文（需要 ``chunks``）。
+            kb_id:  知识库 ID。
+            doc_id: 文档 ID。
+        """
+        import json
+
+        from ragent.common.models import KnowledgeChunk
+        from ragent.common.snowflake import generate_id
+        from ragent.infra.database import get_session_factory, init_db
+
+        # 确保数据库已初始化（Celery worker 可能尚未初始化）
+        try:
+            await init_db()
+        except Exception:
+            # 可能已初始化，忽略重复初始化错误
+            pass
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            try:
+                # 批量创建 KnowledgeChunk 对象
+                chunk_objects = []
+                for chunk in ctx.chunks:
+                    chunk_id = chunk.metadata.get("snowflake_id")
+                    if chunk_id is None:
+                        chunk_id = generate_id()
+
+                    # keywords 列表转为 JSON 字符串
+                    keywords_json = json.dumps(chunk.keywords) if chunk.keywords else None
+
+                    chunk_obj = KnowledgeChunk(
+                        id=chunk_id,
+                        kb_id=kb_id,
+                        doc_id=doc_id,
+                        content=chunk.content,
+                        chunk_index=chunk.index,
+                        char_count=chunk.char_count,
+                        token_count=chunk.token_count,
+                        content_hash=chunk.content_hash,
+                        keywords=keywords_json,
+                        summary=chunk.summary,
+                        enabled=True,
+                        embedding=chunk.vector,  # pgvector Vector 列直接接受 list[float]
+                    )
+                    chunk_objects.append(chunk_obj)
+
+                # 批量插入
+                session.add_all(chunk_objects)
+                await session.commit()
+
+                logger.info(
+                    "IndexerNode: 写入 %d 个分块到数据库, kb_id=%d, doc_id=%d",
+                    len(ctx.chunks), kb_id, doc_id,
+                )
+
+            except Exception as exc:
+                logger.error("IndexerNode: 数据库写入失败: %s", exc)
+                await session.rollback()
+                raise
 
         # 在元数据中记录索引信息
         ctx.metadata["indexed_chunks"] = len(ctx.chunks)
-        ctx.metadata["index_status"] = "mock_success"
+        ctx.metadata["index_status"] = "success"
 
 
 # ---------------------------------------------------------------------------

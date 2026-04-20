@@ -84,6 +84,10 @@ async def _update_doc_chunk_count_async(source_location: str, chunk_count: int) 
     settings = get_settings()
     db_url: str = getattr(settings, "DATABASE_URL", "")
 
+    # asyncpg 只接受 "postgresql://" scheme，需去掉 "+asyncpg" 后缀
+    if "+asyncpg" in db_url:
+        db_url = db_url.replace("+asyncpg", "")
+
     conn = await _asyncpg.connect(db_url)
     try:
         await conn.execute(
@@ -156,6 +160,8 @@ def run_ingestion_pipeline(
     source_type: str,
     source_location: str,
     pipeline_nodes: list[dict[str, Any]] | None = None,
+    kb_id: int | None = None,
+    doc_id: int | None = None,
 ) -> dict[str, Any]:
     """异步执行文档摄入管线。
 
@@ -168,6 +174,8 @@ def run_ingestion_pipeline(
         source_type:   来源类型（local/http/s3）。
         source_location: 文件路径或 URL。
         pipeline_nodes: 自定义管线节点配置列表（可选，默认使用 DEFAULT_PIPELINE_NODES）。
+        kb_id:         知识库 ID（用于将 chunk 写入对应知识库）。
+        doc_id:        文档 ID（用于将 chunk 关联到对应文档）。
 
     Returns:
         序列化后的 IngestionContext 字典，包含执行状态、分块结果等。
@@ -197,6 +205,8 @@ def run_ingestion_pipeline(
         pipeline_id=pipeline_id,
         source_type=source_type,
         source_location=source_location,
+        kb_id=kb_id,
+        doc_id=doc_id,
     )
 
     # 用 asyncio.run 驱动异步管线
@@ -209,7 +219,7 @@ def run_ingestion_pipeline(
             meta={"stage": "管线执行中", "progress": 20},
         )
 
-        async def _run_pipeline_and_update() -> None:
+        async def _run_pipeline_and_update() -> "IngestionContext":
             """执行管线并回写 chunk_count 到数据库。"""
             nonlocal ctx
             ctx = await pipeline.execute(ctx)
@@ -221,6 +231,8 @@ def run_ingestion_pipeline(
                     await _update_doc_chunk_count_async(source_location, chunk_count)
                 except Exception as db_exc:
                     logger.warning("回写 chunk_count 失败: %s", db_exc)
+
+            return ctx
 
         ctx = asyncio.run(_run_pipeline_and_update())
 
@@ -241,5 +253,11 @@ def run_ingestion_pipeline(
             "Celery 任务失败: task_id=%s, error=%s",
             task_id, exc,
         )
-        ctx.mark_failed(str(exc))
-        return _serialize_context(ctx)
+        if ctx is not None:
+            ctx.mark_failed(str(exc))
+            return _serialize_context(ctx)
+        return {
+            "task_id": task_id,
+            "status": "FAILED",
+            "error_message": str(exc),
+        }

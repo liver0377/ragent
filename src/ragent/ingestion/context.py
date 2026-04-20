@@ -108,6 +108,8 @@ class IngestionContext:
         pipeline_id: int,
         source_type: str,
         source_location: str,
+        kb_id: int | None = None,
+        doc_id: int | None = None,
     ) -> None:
         """初始化摄取管线上下文。
 
@@ -116,11 +118,15 @@ class IngestionContext:
             pipeline_id:      管线配置 ID。
             source_type:      来源类型。
             source_location:  文件路径或 URL。
+            kb_id:            知识库 ID（用于将 chunk 写入对应知识库）。
+            doc_id:           文档 ID（用于将 chunk 关联到对应文档）。
         """
         self.task_id: int = task_id
         self.pipeline_id: int = pipeline_id
         self.source_type: str = source_type
         self.source_location: str = source_location
+        self.kb_id: int | None = kb_id
+        self.doc_id: int | None = doc_id
 
         # 中间数据
         self.raw_bytes: bytes | None = None

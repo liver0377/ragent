@@ -14,10 +14,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import math
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+from sqlalchemy import select, text as sa_text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragent.infra.ai.embedding_service import EmbeddingService
 from ragent.rag.intent.intent_classifier import IntentNode
@@ -211,6 +215,150 @@ class GlobalVectorChannel(SearchChannel):
 
 
 # ---------------------------------------------------------------------------
+# 辅助函数：余弦相似度
+# ---------------------------------------------------------------------------
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """计算两个向量的余弦相似度。
+
+    Args:
+        a: 向量 A。
+        b: 向量 B。
+
+    Returns:
+        float: 余弦相似度，范围 [-1, 1]。
+    """
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+# ---------------------------------------------------------------------------
+# 知识库定向检索通道（数据库真实检索）
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeBaseChannel(SearchChannel):
+    """知识库定向检索通道 —— 使用 pgvector 原生向量检索。
+
+    根据指定的 ``knowledge_base_id``，通过 PostgreSQL pgvector 扩展的
+    ``<=>`` 距离操作符直接在数据库中执行向量最近邻搜索，避免将全量
+    分块加载到 Python 内存。
+
+    此通道需要 ``AsyncSession`` 和 ``EmbeddingService`` 实例。
+    """
+
+    def __init__(
+        self,
+        knowledge_base_id: int,
+        db_session: AsyncSession,
+        embedding_service: EmbeddingService,
+    ) -> None:
+        """初始化知识库检索通道。
+
+        Args:
+            knowledge_base_id: 知识库 ID。
+            db_session:        异步数据库会话。
+            embedding_service: 向量嵌入服务实例（用于对查询文本进行向量化）。
+        """
+        self._kb_id = knowledge_base_id
+        self._db = db_session
+        self._embedding = embedding_service
+        self._channel_name = f"kb-{knowledge_base_id}"
+
+    async def search(
+        self,
+        query_embedding: list[float],
+        top_k: int = 10,
+    ) -> list[SearchResult]:
+        """使用 pgvector 执行向量最近邻检索。
+
+        流程：
+            1. 将查询向量转为 pgvector 格式
+            2. 使用 ``embedding <=> $query`` 计算余弦距离
+            3. 按 distance 升序排列，返回 top_k 条结果
+
+        Args:
+            query_embedding: 查询向量（1024 维）。
+            top_k:           返回的最大结果数。
+
+        Returns:
+            list[SearchResult]: 检索结果列表。
+        """
+        logger.debug(
+            "知识库检索(pgvector): kb_id=%d, top_k=%d",
+            self._kb_id,
+            top_k,
+        )
+
+        # 将 Python list[float] 转为 pgvector 字符串格式
+        vector_str = "[" + ", ".join(str(v) for v in query_embedding) + "]"
+
+        # 使用原生 SQL 执行 pgvector 向量搜索
+        # <=> 是余弦距离操作符，值越小越相似
+        stmt = sa_text("""
+            SELECT id, kb_id, doc_id, content, chunk_index,
+                   keywords, summary,
+                   1 - (embedding <=> :query_vec) AS similarity
+            FROM t_knowledge_chunk
+            WHERE kb_id = :kb_id
+              AND enabled = TRUE
+              AND embedding IS NOT NULL
+            ORDER BY embedding <=> :query_vec
+            LIMIT :limit
+        """)
+
+        try:
+            result = await self._db.execute(
+                stmt,
+                {"query_vec": vector_str, "kb_id": self._kb_id, "limit": top_k},
+            )
+            rows = result.fetchall()
+        except Exception:
+            logger.warning(
+                "pgvector 检索失败, kb_id=%d, 回退到无向量模式",
+                self._kb_id,
+                exc_info=True,
+            )
+            return []
+
+        if not rows:
+            logger.debug("知识库 %d 无可用分块（embedding）", self._kb_id)
+            return []
+
+        # 构建返回结果
+        results: list[SearchResult] = []
+        for row in rows:
+            results.append(
+                SearchResult(
+                    chunk_id=str(row.id),
+                    content=row.content,
+                    score=round(float(row.similarity), 4),
+                    metadata={
+                        "kb_id": row.kb_id,
+                        "doc_id": row.doc_id,
+                        "chunk_index": row.chunk_index,
+                        "keywords": row.keywords,
+                        "summary": row.summary,
+                        "source": "knowledge_base",
+                    },
+                    source_channel=self._channel_name,
+                )
+            )
+
+        logger.debug(
+            "知识库检索完成(pgvector): kb_id=%d, 返回=%d",
+            self._kb_id,
+            len(results),
+        )
+        return results
+
+
+# ---------------------------------------------------------------------------
 # 后处理器：去重
 # ---------------------------------------------------------------------------
 
@@ -315,6 +463,7 @@ class RetrievalEngine:
         embedding_service: EmbeddingService,
         dedup_processor: DeduplicatePostProcessor | None = None,
         rerank_processor: RerankPostProcessor | None = None,
+        db_session: AsyncSession | None = None,
     ) -> None:
         """初始化检索引擎。
 
@@ -322,35 +471,42 @@ class RetrievalEngine:
             embedding_service: 向量嵌入服务实例。
             dedup_processor:   去重后处理器，若为 ``None`` 则使用默认实例。
             rerank_processor:  重排序后处理器，若为 ``None`` 则使用默认实例。
+            db_session:        异步数据库会话，用于知识库定向检索。
         """
         self._embedding = embedding_service
         self._dedup = dedup_processor or DeduplicatePostProcessor()
         self._rerank = rerank_processor or RerankPostProcessor()
+        self._db_session = db_session
 
     async def search(
         self,
         query: str,
         intent: IntentNode | None = None,
         top_k: int = 10,
+        knowledge_base_id: int | None = None,
     ) -> list[SearchResult]:
         """执行多路检索。
 
         处理步骤：
             1. 将查询文本向量化
-            2. 根据意图构建检索通道列表
+            2. 根据意图和知识库 ID 构建检索通道列表
             3. 并行执行所有通道检索
             4. 后处理：去重 → 重排序
             5. 返回 top_k 结果
 
         Args:
-            query:  查询文本。
-            intent: 意图节点，若为 ``None`` 则执行全局搜索。
-            top_k:  返回的最大结果数。
+            query:             查询文本。
+            intent:            意图节点，若为 ``None`` 则执行全局搜索。
+            top_k:             返回的最大结果数。
+            knowledge_base_id: 知识库 ID，若指定则限定检索范围。
 
         Returns:
             list[SearchResult]: 检索结果列表。
         """
-        logger.debug("检索引擎: query='%s', intent=%s, top_k=%d", query, intent, top_k)
+        logger.debug(
+            "检索引擎: query='%s', intent=%s, top_k=%d, kb_id=%s",
+            query, intent, top_k, knowledge_base_id,
+        )
 
         # 步骤 1：向量化
         try:
@@ -360,7 +516,7 @@ class RetrievalEngine:
             return []
 
         # 步骤 2：构建检索通道
-        channels = self._build_channels(intent)
+        channels = self._build_channels(intent, knowledge_base_id=knowledge_base_id)
 
         if not channels:
             return []
@@ -396,20 +552,34 @@ class RetrievalEngine:
     def _build_channels(
         self,
         intent: IntentNode | None,
+        *,
+        knowledge_base_id: int | None = None,
     ) -> list[SearchChannel]:
-        """根据意图构建检索通道列表。
+        """根据意图和知识库 ID 构建检索通道列表。
 
         策略：
+            - 指定了 knowledge_base_id：优先使用知识库定向检索通道（真实 DB 查询）
             - 意图明确：构建意图定向通道 + 全局通道作为补充
             - 意图不明确：仅使用全局通道
 
         Args:
-            intent: 意图节点。
+            intent:            意图节点。
+            knowledge_base_id: 知识库 ID，若指定则添加知识库定向通道。
 
         Returns:
             list[SearchChannel]: 检索通道列表。
         """
         channels: list[SearchChannel] = []
+
+        # 指定知识库时，添加真实 DB 检索通道
+        if knowledge_base_id is not None and self._db_session is not None:
+            channels.append(
+                KnowledgeBaseChannel(
+                    knowledge_base_id=knowledge_base_id,
+                    db_session=self._db_session,
+                    embedding_service=self._embedding,
+                )
+            )
 
         if intent is not None and intent.collection_name:
             # 意图明确：定向检索

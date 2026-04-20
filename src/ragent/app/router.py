@@ -458,6 +458,8 @@ async def upload_document(
             pipeline_id=knowledge_base_id,
             source_type="local",
             source_location=file_path,  # 传完整路径，确保 worker 能找到文件
+            kb_id=knowledge_base_id,
+            doc_id=doc_id,
         )
 
         logger.info(

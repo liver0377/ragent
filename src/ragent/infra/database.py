@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import text as sa_text
 
 from ragent.common.logging import get_logger
 from ragent.common.models import Base
@@ -80,6 +81,8 @@ async def init_db() -> None:
 
     # 开发阶段：自动建表（checkfirst 避免并发重复建表）
     async with _async_engine.begin() as conn:
+        # 启用 pgvector 扩展
+        await conn.execute(sa_text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all, checkfirst=True)
 
     logger.info("数据库初始化完成，表已同步")

@@ -33,7 +33,7 @@ services:
   # PostgreSQL 16 — 用户与业务数据持久化
   # ---------------------------------------------------------------------------
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ragent-postgres
     restart: unless-stopped
     ports:
@@ -72,7 +72,7 @@ services:
       GLM_BASE_URL: "https://open.bigmodel.cn/api/coding/paas/v4"
       GLM_MODEL: "openai/glm-4-flash"
       SILICONFLOW_API_KEY: "sk-mipwwquycjbjhghonlduaffmgcvpkiwhwtogjbnkbcliuzar"
-      EMBEDDING_MODEL: "Qwen/Qwen3-Embedding-8B"
+      EMBEDDING_MODEL: "openai/Qwen/Qwen3-Embedding-8B"
     depends_on:
       postgres:
         condition: service_healthy
@@ -102,7 +102,7 @@ services:
       GLM_BASE_URL: "https://open.bigmodel.cn/api/coding/paas/v4"
       GLM_MODEL: "openai/glm-4-flash"
       SILICONFLOW_API_KEY: "sk-mipwwquycjbjhghonlduaffmgcvpkiwhwtogjbnkbcliuzar"
-      EMBEDDING_MODEL: "Qwen/Qwen3-Embedding-8B"
+      EMBEDDING_MODEL: "openai/Qwen/Qwen3-Embedding-8B"
     depends_on:
       postgres:
         condition: service_healthy

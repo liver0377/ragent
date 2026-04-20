@@ -35,6 +35,7 @@ from sqlalchemy.orm import (
     mapped_column,
     relationship,
 )
+from pgvector.sqlalchemy import Vector
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +321,7 @@ class KnowledgeChunk(Base):
     keywords: Mapped[str | None] = mapped_column(String, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
 
     # ---- 索引 ----
     __table_args__ = (
