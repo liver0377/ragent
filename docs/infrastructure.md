@@ -2,25 +2,50 @@
 
 ## 1. 项目概述
 
-Ragent 是一个企业级 RAG（Retrieval-Augmented Generation）智能体平台，基于 Java 17 + Spring Boot 3 + React 18 构建。系统覆盖了从文档入库到智能问答的全链路能力，包括文档解析、分块策略、多路检索、意图识别、问题重写、会话记忆、模型容错、MCP 工具调用和全链路追踪等核心功能。
+Ragent 是一个企业级 RAG（Retrieval-Augmented Generation）智能体平台，基于 **Python 3.12 + FastAPI + React 18** 构建。系统覆盖了从文档入库到智能问答的全链路能力，包括文档摄入管线、向量检索、意图识别、会话记忆、LLM 对话、全链路追踪等核心功能。
 
 ---
 
 ## 2. 技术栈总览
 
-| 层面 | 技术选型 |
-|---|---|
-| 后端框架 | Java 17、Spring Boot 3.5.7、MyBatis Plus |
-| 前端框架 | React 18、Vite 5、TypeScript、Tailwind CSS |
-| 关系数据库 | PostgreSQL（20+ 张业务表） |
-| 向量数据库 | Milvus 2.6 / PostgreSQL pgvector（双引擎支持） |
-| 缓存与分布式锁 | Redis + Redisson |
-| 对象存储 | S3 兼容存储（RustFS） |
-| 消息队列 | RocketMQ 5.x |
-| 文档解析 | Apache Tika 3.2 |
-| 模型供应商 | 百炼（阿里云）、SiliconFlow、Ollama（本地） |
-| 认证鉴权 | Sa-Token |
-| 代码规范 | Spotless（自动格式化 + License Header） |
+**后端运行时**
+- Python 3.12
+- FastAPI（ASGI Web 框架）
+- Uvicorn（ASGI Server，4 workers）
+- SQLAlchemy 2.0（async ORM）
+- asyncpg（异步 PostgreSQL 驱动）
+- Pydantic v2（数据校验与序列化）
+
+**任务队列**
+- Celery 5（分布式任务队列）
+- Redis 7（Broker：db1，Result Backend：db2）
+
+**数据库**
+- PostgreSQL 16 + pgvector 扩展（关系数据 + 向量存储统一引擎）
+
+**缓存**
+- Redis 7（多 DB 复用：db0 缓存、db1 Celery Broker、db2 Celery Result）
+
+**AI 服务**
+- LLM：GLM（智谱AI）via litellm，模型 `openai/glm-4-flash`
+- Embedding：硅基流动 Qwen/Qwen3-Embedding-8B
+
+**前端**
+- React 18 + TypeScript
+- Vite（构建工具）
+- Ant Design（UI 组件库）
+- Nginx（生产静态资源服务）
+
+**部署与运维**
+- Docker Compose（7 个服务编排）
+- Prometheus + Grafana（监控告警）
+
+**认证安全**
+- JWT（PyJWT 签发/验证）
+- bcrypt（passlib 密码哈希）
+
+**配置管理**
+- pydantic-settings（环境变量 + .env 文件统一管理）
 
 ---
 
@@ -28,947 +53,498 @@ Ragent 是一个企业级 RAG（Retrieval-Augmented Generation）智能体平台
 
 ### 3.1 模块分层
 
-Ragent 采用前后端分离的单体架构，后端按职责分为四个 Maven 子模块，外加一个独立的前端工程：
-
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Ragent 系统全景                            │
-├─────────────┬───────────────────────────────────────────────┤
-│   前端层     │  React 18 + Vite + TypeScript + Tailwind      │
-│  (frontend)  │  Zustand 状态管理 / Axios + SSE 通信          │
-├─────────────┼───────────────────────────────────────────────┤
-│   应用层     │  bootstrap（Spring Boot 启动模块）             │
-│ (bootstrap)  │  用户管理 / 知识库 / RAG问答 / 入库流水线 /    │
-│              │  意图树 / 链路追踪 / 管理后台                   │
-├─────────────┼───────────────────────────────────────────────┤
-│   AI基础设施  │  infra-ai（模型调用抽象层）                    │
-│  (infra-ai)  │  Chat / Embedding / Rerank 三大能力            │
-│              │  模型路由 + 熔断降级 + 首包探测                  │
-├─────────────┼───────────────────────────────────────────────┤
-│   通用框架   │  framework（横切关注点基础设施）                │
-│ (framework)  │  异常体系 / 幂等 / 分布式ID / 用户上下文 /     │
-│              │  链路追踪 / SSE封装 / MQ封装                    │
-├─────────────┼───────────────────────────────────────────────┤
-│   MCP服务    │  mcp-server（独立 Spring Boot 应用）           │
-│ (mcp-server) │  JSON-RPC 2.0 / 工具注册与执行 / 天气/工单/销售 │
-└─────────────┴───────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                     前端 (React 18)                       │
+│            TypeScript + Vite + Ant Design                 │
+└──────────────────────┬───────────────────────────────────┘
+                       │ HTTP / REST API
+┌──────────────────────▼───────────────────────────────────┐
+│                  API 网关层 (FastAPI)                      │
+│  ┌──────────┐ ┌─────────────┐ ┌───────────────────────┐  │
+│  │  CORS    │→│ RateLimiter │→│ ExceptionHandler      │  │
+│  └──────────┘ └─────────────┘ └───────────────────────┘  │
+│  ┌──────────────────────┐ ┌───────────────────────────┐  │
+│  │ RequestContext       │→│ TraceMiddleware           │  │
+│  └──────────────────────┘ └───────────────────────────┘  │
+└──────────────────────┬───────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│                   应用层 (app/)                            │
+│  ┌──────────┐ ┌──────────────┐ ┌──────────────────────┐  │
+│  │ router   │ │ auth_router  │ │ deps (依赖注入)      │  │
+│  │ (~815行) │ │ register/    │ │ CurrentUser/DbSession │  │
+│  │ 主路由   │ │ login/me     │ │                       │  │
+│  └──────────┘ └──────────────┘ └──────────────────────┘  │
+└──────────────────────┬───────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│                 公共层 (common/)                           │
+│  ┌──────────┐ ┌────────────┐ ┌───────────────────────┐  │
+│  │ models   │ │ snowflake  │ │ safe_json / json_utils│  │
+│  │ (577行)  │ │ ID 生成器  │ │ BigInt精度修复        │  │
+│  │ 17张表   │ │            │ │                       │  │
+│  └──────────┘ └────────────┘ └───────────────────────┘  │
+└──────────────────────┬───────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│              基础设施层 (infra/)                            │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐ │
+│  │ database │ │  cache   │ │   auth (JWT + bcrypt)    │ │
+│  │ asyncpg  │ │  Redis   │ │                          │ │
+│  └──────────┘ └──────────┘ └──────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │               ai/ (AI 服务层)                        │ │
+│  │  llm_service │ embedding_service │ model_selector   │ │
+│  │              │                    │ circuit_breaker  │ │
+│  └─────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│              摄入管线层 (ingestion/)                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────────────────────┐ │
+│  │ pipeline │ │  nodes   │ │   tasks (Celery)         │ │
+│  │ 6节点引擎│ │ 6个节点  │ │ 异步任务+chunk_count回写  │ │
+│  └──────────┘ └──────────┘ └──────────────────────────┘ │
+│  ┌──────────────────────┐                                │
+│  │ context (管线上下文)  │                                │
+│  └──────────────────────┘                                │
+└──────────────────────────────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│              配置层 (config/)                              │
+│  ┌─────────────────────────────────────────────────────┐ │
+│  │ settings.py — pydantic-settings, 环境变量/.env      │ │
+│  └─────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 模块依赖关系
+### 3.2 各层职责说明
 
-```
-                    ┌──────────┐
-                    │ frontend │
-                    └────┬─────┘
-                         │ HTTP / SSE
-                    ┌────▼─────┐
-                    │bootstrap  │
-                    └──┬────┬──┘
-                  ┌────┘    └────┐
-           ┌──────▼──┐    ┌─────▼───┐
-           │infra-ai │    │framework│
-           └────┬────┘    └─────────┘
-           ┌────▼────┐
-           │framework│
-           └─────────┘
+**API 网关层**
+- 接收所有 HTTP 请求，按中间件链依次处理
+- 中间件执行顺序：CORS → RateLimitMiddleware → ExceptionHandler → RequestContext → TraceMiddleware
+- 将请求路由到对应的应用层处理函数
 
-           ┌───────────┐
-           │mcp-server │  ← 独立进程，通过 HTTP 与 bootstrap 通信
-           └───────────┘
-```
+**应用层 (app/)**
+- **router.py**（~815 行）：主路由，涵盖 health、chat、knowledge-bases、documents、upload、ingestion、conversations、departments 等端点
+- **auth_router.py**：认证路由，提供 register、login、me 三个端点
+- **deps.py**：FastAPI 依赖注入，提供 CurrentUser（当前用户）和 DbSession（数据库会话）
+- **rate_limit.py**：基于 IP + Redis 滑动窗口的限流中间件
+- **middleware.py**：Trace 追踪、RequestContext 上下文传递、ExceptionHandler 全局异常处理中间件
 
-依赖原则：
-- **framework** 是最底层模块，不依赖任何业务模块，提供与业务无关的通用能力
-- **infra-ai** 依赖 framework，屏蔽不同 AI 模型供应商的差异
-- **bootstrap** 依赖 framework 和 infra-ai，包含全部业务逻辑
-- **mcp-server** 是独立部署的 MCP 工具服务，通过 HTTP 协议与主应用交互
-- **frontend** 通过 REST API 和 SSE 与后端通信
+**公共层 (common/)**
+- **models.py**（577 行）：定义全部 17 张数据库表，覆盖 5 个业务域
+- **snowflake.py**：Snowflake 分布式 ID 生成器，保证 ID 全局唯一且有序
+- **safe_json.py**：SafeJSONResponse，修复前端 JavaScript BigInt 精度丢失问题
+- **json_utils.py**：LargeIntJSONEncoder，处理大整数 JSON 序列化
+
+**基础设施层 (infra/)**
+- **database.py**：基于 asyncpg + SQLAlchemy async session 的异步数据库连接管理
+- **cache.py**：Redis 连接池管理，支持多 DB 复用
+- **auth.py**：JWT 签发/验证 + bcrypt 密码哈希
+- **ai/llm_service.py**：LLM 调用服务，通过 litellm 统一调用 GLM 模型
+- **ai/embedding_service.py**：文本向量化服务，调用硅基流动 Embedding API
+- **ai/model_selector.py**：模型选择器，根据场景选择合适的模型
+- **ai/circuit_breaker.py**：熔断器，保护 AI 服务调用稳定性
+
+**摄入管线层 (ingestion/)**
+- **pipeline.py**：6 节点管线引擎，编排文档摄入全流程
+- **nodes.py**：6 个独立节点实现（Fetcher/Parser/Enhancer/Chunker/Enricher/Indexer）
+- **tasks.py**：Celery 异步任务定义 + asyncpg chunk_count 回写
+- **context.py**：IngestionContext，管线执行上下文
+
+**配置层 (config/)**
+- **settings.py**：基于 pydantic-settings，统一管理环境变量和 .env 配置
 
 ---
 
-## 4. 各模块详细架构
+## 4. 部署拓扑
 
-### 4.1 Framework — 通用基础设施层
+### 4.1 Docker Compose 服务编排
 
-Framework 模块提供横切关注点的统一封装，确保业务模块只需关注业务逻辑本身。
+系统通过 Docker Compose 编排 **7 个服务**，统一运行在 **ragent-net**（bridge 网络）下。
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      framework 模块                               │
-├────────────┬────────────┬────────────┬───────────────────────────┤
-│   异常体系  │  错误码规范  │  分布式ID   │      幂等框架              │
-│ ClientEx   │ IErrorCode  │ Snowflake  │  IdempotentSubmit (HTTP) │
-│ ServiceEx  │ BaseError   │ (Redis Lua │  IdempotentConsume (MQ)  │
-│ RemoteEx   │ Code(A/B/C) │  初始化)    │  (AOP + Redis/Redisson)  │
-├────────────┼────────────┼────────────┼───────────────────────────┤
-│  用户上下文  │  链路追踪   │  SSE封装    │      MQ封装               │
-│ UserContext │ @RagTrace  │ SseEmitter │  MessageWrapper          │
-│ (TTL透传)   │ Root/Node  │ Sender     │  RocketMQProducerAdapter │
-│ LoginUser   │ Context    │ (线程安全)  │  DelegatingTransaction   │
-├────────────┼────────────┼────────────┼───────────────────────────┤
-│  数据库配置  │  统一响应体  │  Redis命名  │     Spring上下文          │
-│ MyMetaObj   │ Result<T>  │ KeySerial  │  ApplicationContextHolder│
-│ Handler     │ Results    │ izer       │                          │
-│ (自动填充)   │            │            │                          │
-└────────────┴────────────┴────────────┴───────────────────────────┘
-```
+**服务 1：redis**
+- 镜像：`redis:7-alpine`
+- 端口：6379
+- 用途：多 DB 复用——db0 缓存、db1 Celery Broker、db2 Celery Result Backend
+- 存储：redis-data volume
 
-核心能力说明：
+**服务 2：postgres**
+- 镜像：`postgres:16-alpine`
+- 端口：5432
+- 用途：关系数据库 + pgvector 向量存储
+- 存储：postgres-data volume
 
-| 能力 | 实现方式 | 说明 |
-|---|---|---|
-| 三级异常体系 | ClientException / ServiceException / RemoteException | 对应客户端错误、服务端错误、远程调用错误 |
-| 双维度幂等 | AOP + Redis（HTTP请求防重）/ AOP + Redis Lua（MQ消费防重） | 支持 SpEL 表达式动态生成幂等键 |
-| Snowflake 分布式 ID | Redis Lua 原子分配 workerId + datacenterId | 集成 MyBatis Plus 自动填充主键 |
-| 用户上下文透传 | TransmittableThreadLocal | 确保用户身份在线程池异步场景下不丢失 |
-| 链路追踪 | @RagTraceRoot + @RagTraceNode 注解驱动 | 树形 Trace 结构，TTL 透传 traceId |
-| MQ 事务消息 | DelegatingTransactionListener + 事务回调注册 | 支持半消息、本地事务、回查三阶段 |
-| SSE 流式推送 | SseEmitterSender（CAS 保证线程安全） | 幂等的 complete / fail 操作 |
+**服务 3：ragent-api**
+- 镜像：项目自建
+- 端口：8000
+- 命令：FastAPI + Uvicorn，4 workers 并发
+- 用途：API 服务，处理所有 HTTP 请求
+- 存储：upload-data volume（文件上传）
 
-### 4.2 Infra-AI — AI 模型基础设施层
+**服务 4：ragent-worker**
+- 镜像：项目自建
+- 命令：Celery worker，并发度 `-c 4`
+- 队列：`ingestion.task`、`ingestion.chunk`、`rag.feedback`、`celery`
+- 用途：异步任务执行，处理文档摄入、分块、RAG 反馈等后台任务
 
-Infra-AI 模块对上层业务提供统一的 AI 能力接口，对下层屏蔽不同模型供应商的协议差异，并实现模型路由、熔断降级和首包探测。
+**服务 5：ragent-web**
+- 镜像：项目自建
+- 端口：80
+- 用途：React 前端 + Nginx 静态资源服务
 
-```
-┌────────────────────────────────────────────────────────────┐
-│                   业务层调用入口                             │
-│              LLMService / EmbeddingService / RerankService │
-└──────────────────────┬─────────────────────────────────────┘
-                       │
-┌──────────────────────▼─────────────────────────────────────┐
-│                  路由层 (Routing*Service)                    │
-│  ┌─────────────┐  ┌──────────────────┐  ┌──────────────┐  │
-│  │ModelSelector │  │ModelRoutingExec  │  │ModelHealth   │  │
-│  │(候选排序)    │  │(降级迭代)        │  │Store(熔断器) │  │
-│  └─────────────┘  └──────────────────┘  └──────────────┘  │
-└──────────────────────┬─────────────────────────────────────┘
-                       │
-┌──────────────────────▼─────────────────────────────────────┐
-│               Provider Client 抽象层                        │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │  AbstractOpenAIStyleChatClient (模板方法模式)         │  │
-│  │  AbstractOpenAIStyleEmbeddingClient                   │  │
-│  └──────────────────────────────────────────────────────┘  │
-│  ┌───────────┐  ┌────────────────┐  ┌──────────────┐      │
-│  │ BaiLian   │  │ SiliconFlow    │  │   Ollama     │      │
-│  │ ChatClient│  │ ChatClient     │  │  ChatClient  │      │
-│  │ EmbClient │  │ EmbClient      │  │  EmbClient   │      │
-│  │ RerankClnt│  │                │  │              │      │
-│  └───────────┘  └────────────────┘  └──────────────┘      │
-└────────────────────────────────────────────────────────────┘
-```
+**服务 6：prometheus**
+- 镜像：`prom/prometheus`
+- 端口：9090
+- 用途：指标采集与存储
+- 存储：prometheus-data volume
 
-#### 4.2.1 三大 AI 能力
+**服务 7：grafana**
+- 镜像：`grafana/grafana`
+- 端口：3000
+- 用途：监控可视化面板
+- 存储：grafana-data volume
 
-| 能力 | 业务接口 | 客户端接口 | 支持的供应商 |
-|---|---|---|---|
-| Chat（对话） | LLMService | ChatClient | 百炼、SiliconFlow、Ollama |
-| Embedding（向量化） | EmbeddingService | EmbeddingClient | SiliconFlow、Ollama |
-| Rerank（重排序） | RerankService | RerankClient | 百炼、Noop（测试用） |
+### 4.2 存储卷
 
-#### 4.2.2 模型路由与熔断
+- **redis-data**：Redis 持久化数据
+- **postgres-data**：PostgreSQL 数据文件
+- **prometheus-data**：Prometheus 时序数据
+- **grafana-data**：Grafana 面板配置
+- **upload-data**：用户上传文件存储
 
-模型路由机制确保系统不依赖单一模型供应商，核心流程如下：
+### 4.3 网络
+
+- **ragent-net**：bridge 网络，所有 7 个服务共享此网络，通过容器名相互访问
+
+### 4.4 服务通信关系
 
 ```
-用户请求
-    │
-    ▼
-ModelSelector.selectCandidates()
-    │
-    ├─ 按优先级排序候选模型列表
-    ├─ 过滤掉熔断状态为 OPEN 的模型
-    │
-    ▼
-ModelRoutingExecutor.executeWithFallback()
-    │
-    ├─ 候选 1 → 调用 → 成功？ → 返回结果
-    │                  失败？ → 标记失败，尝试下一个
-    ├─ 候选 2 → 调用 → 成功？ → 返回结果
-    │                  失败？ → 标记失败，尝试下一个
-    ├─ 候选 3 → 调用 → ...
-    │
-    ▼
-全部失败 → 抛出 RemoteException
-```
-
-#### 4.2.3 三态熔断器
-
-```
-         失败次数 < 阈值                失败次数 ≥ 阈值
-    ┌──────────┐  (正常调用)   ┌──────────┐  (触发熔断)
-    │  CLOSED  │──────────────▶│   OPEN   │
-    │ (允许调用) │              │ (拒绝调用) │
-    └──────────┘               └────┬─────┘
-         ▲                          │
-         │    探测成功               │ 冷却期结束
-         │                          ▼
-         │                    ┌───────────┐
-         └────────────────────│ HALF_OPEN │
-              探测成功         │ (放行1个   │
-              恢复CLOSED       │  探测请求) │
-                               └───────────┘
-                                    │ 探测失败
-                                    ▼
-                              回到 OPEN 状态
-```
-
-#### 4.2.4 流式首包探测
-
-流式对话场景下的首包探测机制，确保模型切换时用户端不会收到半截脏数据：
-
-```
-RoutingLLMService.streamChat()
-    │
-    ├─ 候选 1 → ProbeStreamBridge 包装
-    │            │
-    │            ├─ 等待首包（最长60秒）
-    │            ├─ 首包到达 → 刷新缓冲区，后续直接透传 → 返回
-    │            ├─ 首包超时/错误 → 取消流，标记失败 → 尝试下一个
-    │
-    ├─ 候选 2 → ProbeStreamBridge 包装
-    │            └─ ...（同上）
-    │
-    ▼
-全部失败 → callback.onError()
-```
-
-### 4.3 Bootstrap — 业务应用层
-
-Bootstrap 是系统的核心业务模块，包含六大业务域：
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        bootstrap 业务域                          │
-├──────────┬──────────┬──────────┬──────────┬──────────┬──────────┤
-│  user    │  admin   │knowledge │   rag    │ingestion │   core   │
-│ 用户管理  │ 管理后台  │ 知识库    │ RAG问答   │ 入库流水线│ 解析分块  │
-├──────────┼──────────┼──────────┼──────────┼──────────┼──────────┤
-│ 注册登录  │ 仪表盘   │ 知识库CRUD│ 问题重写  │ 流水线编排│ 文档解析  │
-│ 角色权限  │ KPI概览  │ 文档管理  │ 意图识别  │ 节点执行  │ 分块策略  │
-│ 密码管理  │ 趋势图表  │ 分块管理  │ 多路检索  │ 条件分支  │ 向量化    │
-│          │ 性能指标  │ 定时刷新  │ Prompt   │ 抓取策略  │          │
-│          │          │ 文件上传  │ 会话记忆  │          │          │
-│          │          │          │ MCP工具   │          │          │
-│          │          │          │ 链路追踪  │          │          │
-│          │          │          │ 意图引导  │          │          │
-│          │          │          │ 限流排队  │          │          │
-└──────────┴──────────┴──────────┴──────────┴──────────┴──────────┘
-```
-
-### 4.4 MCP-Server — MCP 工具服务
-
-MCP-Server 是一个独立部署的 Spring Boot 应用，通过 JSON-RPC 2.0 over HTTP 协议对外暴露工具能力。
-
-```
-┌──────────────────────────────────────────────┐
-│              MCP Server (端口 9099)           │
-├──────────────────────────────────────────────┤
-│  MCPEndpoint (POST /mcp)                     │
-│       │                                      │
-│       ▼                                      │
-│  MCPDispatcher                                │
-│       │                                      │
-│       ├── initialize → 返回服务器能力声明      │
-│       ├── tools/list  → 返回工具列表           │
-│       └── tools/call  → 执行具体工具           │
-│               │                              │
-│               ▼                              │
-│  MCPToolRegistry (自动发现所有 MCPToolExecutor)│
-│       │                                      │
-│       ├── WeatherMCPExecutor (天气查询)       │
-│       ├── TicketMCPExecutor  (工单查询)       │
-│       └── SalesMCPExecutor   (销售查询)       │
-└──────────────────────────────────────────────┘
-```
-
-### 4.5 Frontend — 前端工程
-
-前端采用 React 18 + TypeScript + Vite 构建，使用 shadcn/ui（Radix UI）组件库和 Tailwind CSS 进行样式管理。
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                      Frontend 架构                            │
-├──────────────┬───────────────────────────────────────────────┤
-│  路由层       │  React Router v6 + 路由守卫                   │
-│              │  RequireAuth / RequireAdmin / RedirectIfAuth   │
-├──────────────┼───────────────────────────────────────────────┤
-│  页面层       │  登录页 / 聊天页 / 管理后台（14个子页面）       │
-│  (pages)     │  仪表盘 / 知识库 / 文档 / 分块 / 意图树 /      │
-│              │  入库管理 / 链路追踪 / 系统设置 / 示例问题 /    │
-│              │  关键词映射 / 用户管理                          │
-├──────────────┼───────────────────────────────────────────────┤
-│  状态管理     │  Zustand（3 个 Store）                        │
-│  (stores)    │  authStore / chatStore / themeStore            │
-├──────────────┼───────────────────────────────────────────────┤
-│  API 服务层   │  Axios（REST） + 自定义 SSE 客户端（流式）     │
-│  (services)  │  12 个 API 服务模块                            │
-├──────────────┼───────────────────────────────────────────────┤
-│  组件层       │  ui/（shadcn组件）/ chat/ / layout/ /         │
-│  (components)│  common/ / session/ / admin/                  │
-└──────────────┴───────────────────────────────────────────────┘
-```
-
----
-
-## 5. 核心业务流程
-
-### 5.1 RAG 问答全链路
-
-一次用户提问在 Ragent 中经过的完整链路：
-
-```
-用户提问
-  │
-  ▼
-┌───────────────────────────────────────────────────────────────┐
-│ 1. 排队限流                                                    │
-│    Redis ZSET + Lua脚本排队 / Semaphore并发控制 / SSE状态推送   │
-└───────────────────────┬───────────────────────────────────────┘
-                        ▼
-┌───────────────────────────────────────────────────────────────┐
-│ 2. 问题重写                                                    │
-│    多轮对话上下文补全 / 复杂问题拆分为子问题 / 关键词归一化映射  │
-└───────────────────────┬───────────────────────────────────────┘
-                        ▼
-┌───────────────────────────────────────────────────────────────┐
-│ 3. 意图分类                                                    │
-│    树形意图体系（领域 → 类目 → 话题）                            │
-│    LLM 打分 → 置信度过滤 → 歧义检测 → 必要时引导用户澄清        │
-│    判定结果：RAG知识检索 or MCP工具调用                          │
-└───────┬───────────────────────────────┬───────────────────────┘
-        ▼                               ▼
-┌───────────────────┐         ┌───────────────────┐
-│ 4a. 多路检索       │         │ 4b. MCP工具调用     │
-│ (RAG路径)          │         │ (工具路径)          │
-│                    │         │                    │
-│ ┌───────────────┐ │         │ LLM参数提取         │
-│ │意图定向检索    │ │         │     │               │
-│ │(指定Collection)│ │         │     ▼               │
-│ └───────┬───────┘ │         │ MCPClient调用       │
-│ ┌───────┴───────┐ │         │ HTTP → MCP Server   │
-│ │全局向量检索    │ │         │     │               │
-│ │(全量Collection)│ │         │     ▼               │
-│ └───────┬───────┘ │         │ 获取工具执行结果     │
-│     并行执行       │         └────────┬──────────┘
-│         ▼         │                  │
-│ ┌───────────────┐ │                  │
-│ │后处理流水线    │ │                  │
-│ │去重 → 重排序   │ │                  │
-│ └───────┬───────┘ │                  │
-└─────────┼─────────┘                  │
-          │                            │
-          ▼                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 5. Prompt 组装                                               │
-│    系统提示词 + 检索上下文 / 工具结果 + 对话历史 + 用户问题    │
-└───────────────────────┬─────────────────────────────────────┘
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 6. 模型生成（SSE 流式输出）                                   │
-│    多候选路由 → 首包探测 → 自动降级 → 流式内容推送             │
-│    支持深度思考模式（thinking + content 双通道）               │
-└───────────────────────┬─────────────────────────────────────┘
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 7. 后处理                                                    │
-│    消息持久化 / 会话记忆更新 / 链路追踪记录 / 用户反馈收集     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### 5.2 多路检索引擎
-
-检索是 RAG 系统的核心，Ragent 采用多通道并行 + 后处理流水线的架构：
-
-```
-                         重写后的问题
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-     ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-     │ 意图定向检索  │ │ 全局向量检索  │ │  (可扩展...)  │
-     │ 通道          │ │ 通道          │ │              │
-     │              │ │              │ │              │
-     │ 按意图路由到  │ │ 全量 Collection│ │              │
-     │ 指定Collection│ │ 并行检索      │ │              │
-     └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
-            │                │                │
-            └────────────────┼────────────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │   结果合并       │
-                    └────────┬────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │  去重后处理器     │
-                    │ (跨通道去重)     │
-                    └────────┬────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │  重排序后处理器   │
-                    │ (Rerank模型)    │
-                    └────────┬────────┘
-                             ▼
-                      最终检索结果
-```
-
-每个检索通道独立执行、互不影响，通过线程池并行调度。后处理器按顺序串联，逐步精炼检索结果。
-
-### 5.3 意图识别体系
-
-意图识别采用树形多级分类结构，结合 LLM 打分和置信度过滤：
-
-```
-                        用户问题
-                           │
-                           ▼
-                  ┌─────────────────┐
-                  │ IntentClassifier │
-                  │ (LLM 打分)       │
-                  └────────┬────────┘
-                           │
-                           ▼
-              对所有叶节点打分 + 置信度排序
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-         高置信度       中置信度       低置信度
-         (≥阈值)      (歧义区间)     (<阈值)
-              │            │            │
-              ▼            ▼            ▼
-        直接执行      IntentGuidance   全局检索
-        指定意图      Service 歧义     (不限定意图)
-                      检测与引导
-                           │
-                    ┌──────┴──────┐
-                    ▼             ▼
-              引导用户澄清    置信度OK
-              (返回选项)     (执行意图)
-```
-
-意图树的三级结构：
-
-```
-Level 0: DOMAIN（领域）
-    ├── Level 1: CATEGORY（类目）
-    │       ├── Level 2: TOPIC（话题/叶节点）
-    │       ├── Level 2: TOPIC（话题/叶节点）
-    │       └── ...
-    ├── Level 1: CATEGORY（类目）
-    │       └── ...
-    └── ...
-```
-
-每个叶节点可关联一个知识库 Collection 或一个 MCP 工具 ID，决定该意图走 RAG 检索路径还是 MCP 工具调用路径。
-
-### 5.4 会话记忆管理
-
-```
-                    当前对话
-                       │
-                       ▼
-              ┌─────────────────┐
-              │ 滑动窗口         │
-              │ (保留近 N 轮)    │
-              └────────┬────────┘
-                       │
-              ┌────────┴────────┐
-              │  轮数是否超限？   │
-              └────────┬────────┘
-                  │           │
-              未超限         超限
-                  │           │
-                  ▼           ▼
-           直接使用      ┌──────────────┐
-           历史          │ 自动摘要压缩  │
-                        │ (LLM 生成)   │
-                        │ 摘要持久化到  │
-                        │ summary 表   │
-                        └──────┬───────┘
-                               │
-                               ▼
-                        摘要 + 最近N轮
-                        组装为上下文
-```
-
-### 5.5 文档入库流水线（Ingestion Pipeline）
-
-文档从上传到可检索，经过一条基于节点编排的 Pipeline：
-
-```
-┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
-│ Fetcher  │───▶│ Parser   │───▶│ Enhancer │───▶│ Chunker  │───▶│ Enricher │───▶│ Indexer  │
-│ 数据抓取  │    │ 文档解析  │    │ 文档增强  │    │ 文本分块  │    │ 分块丰富  │    │ 向量入库  │
-└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
-     │               │               │               │               │               │
-     ▼               ▼               ▼               ▼               ▼               ▼
-  从数据源         Tika解析        LLM增强         按策略切分       LLM逐块        写入Milvus
-  获取原始字节     PDF/Word/       上下文增强       向量化Embedding  提取关键词      或pgvector
-  (本地/HTTP/      Markdown等      关键词提取                       生成摘要
-   S3/飞书)                        问题生成
-
-     每个节点支持:
-     ├── 条件执行（condition_json）
-     ├── 输出链式传递（context 上下文）
-     └── 独立执行日志（task_node 记录）
-```
-
-#### 5.5.1 数据抓取策略
-
-通过策略模式支持多种数据源：
-
-| 策略 | 说明 |
-|---|---|
-| LocalFileFetcher | 本地文件系统 |
-| HttpUrlFetcher | HTTP/HTTPS URL |
-| S3Fetcher | S3 兼容对象存储 |
-| FeishuFetcher | 飞书文档平台 |
-
-#### 5.5.2 分块策略
-
-| 策略 | 说明 |
-|---|---|
-| FixedSizeTextChunker | 固定大小分块，支持可配置重叠 |
-| StructureAwareTextChunker | 结构感知分块，尊重文档标题和章节 |
-
-#### 5.5.3 Pipeline 引擎
-
-Pipeline 引擎的核心工作机制：
-
-```
-PipelineDefinition (数据库配置)
-    │
-    ├── NodeConfig 1 → NodeConfig 2 → NodeConfig 3 → ...
-    │   (链表结构, nextNodeId 串联)
-    │
-    ▼
-IngestionEngine
-    │
-    ├── 构建 NodeConfig 链表
-    ├── 环路检测
-    ├── 找到起始节点
-    │
-    ├── 对每个节点:
-    │   ├── ConditionEvaluator 评估条件
-    │   ├── 跳过条件不满足的节点
-    │   ├── 调用对应 IngestionNode.execute()
-    │   ├── 将输出写入 IngestionContext
-    │   └── NodeOutputExtractor 记录日志
-    │
-    └── 返回 IngestionResult
-```
-
----
-
-## 6. 并发与线程模型
-
-### 6.1 专用线程池
-
-系统根据不同工作负载的特征，配置了 8 个独立线程池：
-
-| 线程池 | 用途 | 特点 |
-|---|---|---|
-| MCP 批量调用线程池 | 并行调用多个 MCP 工具 | 高并发、短任务 |
-| RAG 上下文组装线程池 | 组装检索上下文 | 中等并发 |
-| 多路检索线程池 | 并行执行多个检索通道 | IO 密集型 |
-| 内部检索线程池 | 单个检索通道内部并行检索 | IO 密集型 |
-| 意图分类线程池 | LLM 意图打分 | CPU + IO 混合 |
-| 记忆摘要线程池 | 会话记忆摘要压缩 | IO 密集型 |
-| 模型流式输出线程池 | OkHttp 流式读取 | 长连接、IO 密集型 |
-| 对话入口线程池 | 聊天请求总协调 | 综合型 |
-
-所有线程池均使用 `TtlExecutors` 包装，确保 `UserContext` 和 `RagTraceContext` 在异步线程中正确透传。
-
-### 6.2 排队限流机制
-
-```
-用户请求
-    │
-    ▼
-┌──────────────┐
-│ ZSET 排队     │  ← 请求入队，按时间戳排序
-└──────┬───────┘
+┌─────────────┐
+│   用户浏览器  │
+└──────┬──┬───┘
+       │  │
+       │  │ :80
+       │  ▼
+       │ ┌─────────────┐
+       │ │ ragent-web  │  React + Nginx
+       │ └──────┬──────┘
+       │        │ 内部代理 /api → ragent-api:8000
+       │        ▼
+       │ ┌──────────────┐
+       │ │ ragent-api   │  FastAPI + Uvicorn (4 workers)
+       │ │   :8000      │
+       │ └──┬───┬───┬───┘
+       │    │   │   │
+       │    │   │   └──────────────────────┐
+       │    │   │                          │
+       │    │   │ :5432                    │ Celery 任务派发
+       │    │   ▼                          │ (Redis db1)
+       │    │ ┌──────────────┐             │
+       │    │ │  postgres    │             │
+       │    │ │   :5432      │             │
+       │    │ │ pgvector扩展 │             │
+       │    │ └──────────────┘             │
+       │    │                              │
+       │    │ :6379                        ▼
+       │    ├──────────────┐    ┌──────────────────┐
+       │    │              │    │ ragent-worker    │
+       │    ▼              │    │ Celery (-c 4)    │
+       │  ┌──────────────┐│    │ 4个队列消费者     │
+       │  │    redis     ││    └────┬───┬─────────┘
+       │  │   :6379      ││         │   │
+       │  │ db0/db1/db2  ││         │   │ :5432
+       │  └──────────────┘│         │   ▼
+       │                  │         │ ┌──────────────┐
+       │                  └─────────┴─┤  postgres    │
+       │                            └──┤              │
+       │                               └──────────────┘
+       │ :9090                    :6379
+       ▼                           ▼
+┌──────────────┐          ┌──────────────┐
+│ prometheus   │◄─────────┤    redis     │
+│   :9090      │  采集指标  │  (metrics)   │
+└──────┬───────┘          └──────────────┘
+       │ :3000
        ▼
 ┌──────────────┐
-│ Lua 脚本原子  │  ← 判断是否在队头窗口内
-│ 判断          │
-└──────┬───────┘
-       │
-  ┌────┴────┐
-  ▼         ▼
-允许       排队等待
-执行         │
-             ▼
-┌──────────────┐
-│ Semaphore    │  ← 控制最大并发数
-│ 并发控制      │     许可自动过期（防死锁）
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ Pub/Sub 广播  │  ← 跨实例通知
-│ 唤醒          │     本地合并通知避免惊群
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│ SSE 推送      │  ← 实时推送排队状态
-│ 排队状态      │     超时自动踢出
+│   grafana    │
+│   :3000      │
+│  可视化面板   │
 └──────────────┘
 ```
 
 ---
 
+## 5. 中间件链
+
+所有 API 请求按以下顺序经过中间件处理：
+
+**第 1 层：CORS**
+- 处理跨域请求，允许前端域名访问 API
+
+**第 2 层：RateLimitMiddleware**
+- 基于 IP + Redis 滑动窗口的限流机制
+- 限流规则：
+  - `/api/v1/auth/register`：5 次 / 60 秒
+  - `/api/v1/auth/login`：10 次 / 60 秒
+  - `/api/v1/chat`：20 次 / 60 秒
+  - `/api/v1/upload`：10 次 / 60 秒
+
+**第 3 层：ExceptionHandler**
+- 全局异常捕获，统一错误响应格式
+
+**第 4 层：RequestContext**
+- 请求上下文初始化，传递请求级别数据
+
+**第 5 层：TraceMiddleware**
+- 请求追踪，生成 trace_id，贯穿全链路日志
+
+---
+
+## 6. 认证流程
+
+### 6.1 用户注册
+
+1. 客户端发送 `POST /api/v1/auth/register`，携带用户名和密码
+2. 服务端使用 **bcrypt** 对密码进行哈希（通过 passlib）
+3. 使用 **Snowflake ID 生成器** 生成唯一用户 ID
+4. 将用户信息写入 `t_user` 表
+5. 签发 **JWT Token**（通过 PyJWT）返回给客户端
+
+### 6.2 用户登录
+
+1. 客户端发送 `POST /api/v1/auth/login`，携带用户名和密码
+2. 服务端从 `t_user` 查询用户，使用 **bcrypt** 验证密码
+3. 验证通过后签发 **JWT Token** 返回给客户端
+
+### 6.3 请求鉴权
+
+1. 客户端在后续请求的 Header 中携带 `Authorization: Bearer <token>`
+2. FastAPI 依赖注入 `CurrentUser` 通过 JWT 解码验证 Token 有效性
+3. 从 Token 中提取用户信息，注入到请求处理函数中
+
+---
+
 ## 7. 数据模型
 
-### 7.1 数据库 ER 关系
+系统共 **17 张表**，划分为 **5 个业务域**：
 
-系统使用 PostgreSQL 作为关系数据库，共设计 20+ 张业务表，按业务域划分为以下几组：
+### 7.1 用户域
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       用户与会话域                                │
-├─────────────┬──────────────┬──────────────┬─────────────────────┤
-│  t_user     │t_conversation│ t_message    │t_conversation_summary│
-│  用户表      │ 会话表        │ 消息表       │ 会话摘要表           │
-│             │              │              │                     │
-│ id          │ id           │ id           │ id                  │
-│ username    │ conversation │ conversation │ conversation_id     │
-│ password    │   _id        │   _id        │ user_id             │
-│ role        │ user_id      │ user_id      │ last_message_id     │
-│ avatar      │ title        │ role         │ content(摘要)        │
-│             │ last_time    │ content      │                     │
-│             │              │ thinking_    │                     │
-│             │              │   content    │                     │
-│             │              │ thinking_    │                     │
-│             │              │   duration   │                     │
-├─────────────┼──────────────┴──────────────┴─────────────────────┤
-│t_message_   │  t_sample_question                              │
-│feedback     │  示例问题表                                      │
-│消息反馈表    │                                                 │
-└─────────────┴─────────────────────────────────────────────────┘
+- **t_department** — 部门信息表
+- **t_user** — 用户信息表（含 bcrypt 哈希密码）
+- **t_conversation** — 对话会话表
+- **t_message** — 对话消息表
+- **t_conversation_summary** — 会话摘要表
+- **t_message_feedback** — 消息反馈表（用户点赞/点踩）
 
-┌─────────────────────────────────────────────────────────────────┐
-│                       知识库域                                    │
-├──────────────┬───────────────┬──────────────┬───────────────────┤
-│t_knowledge_  │t_knowledge_   │t_knowledge_  │t_knowledge_       │
-│  base        │  document     │  chunk       │  document_chunk_  │
-│ 知识库表      │ 文档表         │ 分块表       │  log              │
-│              │               │              │ 分块日志表         │
-│ id           │ id            │ id           │ id                │
-│ name         │ kb_id         │ kb_id        │ doc_id            │
-│ embedding_   │ doc_name      │ doc_id       │ status            │
-│   model      │ enabled       │ chunk_index  │ 各阶段耗时         │
-│ collection_  │ chunk_count   │ content      │ chunk_count       │
-│   name       │ file_url      │ content_hash │ error_message     │
-│              │ file_type     │ char_count   │                   │
-│              │ process_mode  │ token_count  │                   │
-│              │ chunk_strategy│ enabled      │                   │
-│              │ pipeline_id   │              │                   │
-├──────────────┴───────────────┴──────────────┴───────────────────┤
-│t_knowledge_document_schedule │ t_knowledge_document_schedule_exec│
-│ 文档定时刷新任务表            │ 定时刷新执行记录表                 │
-└──────────────────────────────┴──────────────────────────────────┘
+### 7.2 知识库域
 
-┌─────────────────────────────────────────────────────────────────┐
-│                     RAG 意图与检索域                              │
-├──────────────┬──────────────────────────────────────────────────┤
-│ t_intent_node│ t_query_term_mapping                            │
-│ 意图树节点表  │ 关键词归一化映射表                                │
-│              │                                                 │
-│ id           │ id                                              │
-│ kb_id        │ domain                                          │
-│ intent_code  │ source_term                                     │
-│ name         │ target_term                                     │
-│ level        │ match_type                                      │
-│ parent_code  │ priority                                        │
-│ examples     │ enabled                                         │
-│ collection_  │                                                 │
-│   name       │                                                 │
-│ mcp_tool_id  │                                                 │
-│ kind(0:RAG   │                                                 │
-│   /1:SYSTEM) │                                                 │
-│ prompt相关   │                                                 │
-├──────────────┼──────────────────────────────────────────────────┤
-│t_rag_trace_  │ t_rag_trace_node                                │
-│  run         │ Trace 节点记录表                                  │
-│ Trace运行表   │                                                 │
-│              │ trace_id → trace_id                              │
-│ trace_id     │ node_id / parent_node_id / depth                │
-│ trace_name   │ node_type / node_name                           │
-│ conversation │ class_name / method_name                         │
-│   _id        │ status / duration_ms                            │
-│ task_id      │ extra_data                                      │
-│ status       │                                                 │
-│ duration_ms  │                                                 │
-└──────────────┴──────────────────────────────────────────────────┘
+- **t_knowledge_base** — 知识库表
+- **t_knowledge_document** — 知识库文档表
+- **t_knowledge_chunk** — 文档分块表（含 pgvector 向量字段）
+- **t_knowledge_document_chunk_log** — 分块日志表
 
-┌─────────────────────────────────────────────────────────────────┐
-│                       入库流水线域                                │
-├──────────────┬────────────────────┬────────────┬────────────────┤
-│t_ingestion_  │t_ingestion_        │t_ingestion_│t_ingestion_    │
-│  pipeline    │  pipeline_node     │  task      │  task_node     │
-│ 流水线表      │ 流水线节点表        │ 任务表     │ 任务节点表      │
-│              │                    │            │                │
-│ id           │ id                 │ id         │ id             │
-│ name         │ pipeline_id        │ pipeline_id│ task_id        │
-│ description  │ node_id            │ source_    │ pipeline_id    │
-│              │ node_type          │   type     │ node_id        │
-│              │ next_node_id(链表) │ source_    │ node_type      │
-│              │ settings_json      │   location │ status         │
-│              │ condition_json     │ status     │ duration_ms    │
-│              │                    │ chunk_count│ output_json    │
-│              │                    │ logs_json  │                │
-│              │                    │ metadata_  │                │
-│              │                    │   json     │                │
-└──────────────┴────────────────────┴────────────┴────────────────┘
+### 7.3 RAG 意图域
 
-┌─────────────────────────────────────────────────────────────────┐
-│                       向量存储域                                  │
-├─────────────────────────────────────────────────────────────────┤
-│ t_knowledge_vector                                              │
-│ 知识库向量存储表（pgvector）                                      │
-│                                                                 │
-│ id          — 分块ID                                             │
-│ content     — 分块文本内容                                        │
-│ metadata    — 元数据（JSONB）                                     │
-│ embedding   — 向量（vector(1536)，HNSW 索引）                     │
-│                                                                 │
-│ 注：同时支持 Milvus 作为向量数据库引擎                              │
-└─────────────────────────────────────────────────────────────────┘
-```
+- **t_intent_node** — 意图节点表
+- **t_query_term_mapping** — 查询词映射表
 
-### 7.2 ID 生成策略
+### 7.4 追踪域
 
-所有业务表主键采用 Snowflake 分布式 ID 算法，通过 Redis Lua 脚本在应用启动时原子分配 workerId 和 datacenterId，保证全局唯一性和趋势递增。
+- **t_rag_trace_run** — RAG 追踪运行表
+- **t_rag_trace_node** — RAG 追踪节点表
+
+### 7.5 管线域
+
+- **t_ingestion_pipeline** — 摄入管线定义表
+- **t_ingestion_pipeline_node** — 管线节点定义表
+- **t_ingestion_task** — 摄入任务表
+- **t_ingestion_task_node** — 摄入任务节点执行记录表
 
 ---
 
-## 8. 设计模式应用
+## 8. 文档摄入管线
 
-Ragent 中的设计模式均对应具体的工程问题：
+### 8.1 管线概述
 
-| 设计模式 | 应用场景 | 解决的问题 |
-|---|---|---|
-| 策略模式 | SearchChannel / PostProcessor / MCPToolExecutor / DocumentFetcher / ChunkingStrategy | 检索通道、后处理器、MCP 工具、数据抓取、分块策略可插拔替换 |
-| 工厂模式 | IntentTreeFactory / ChunkingStrategyFactory / StreamCallbackFactory | 复杂对象的创建逻辑集中管理 |
-| 注册表模式 | MCPToolRegistry / IntentNodeRegistry | 组件自动发现与注册，新增工具零配置 |
-| 模板方法 | IngestionNode / AbstractOpenAIStyleChatClient / AbstractOpenAIStyleEmbeddingClient | 统一执行流程，子类只关注核心逻辑差异 |
-| 装饰器模式 | ProbeStreamBridge | 在不修改原有 StreamCallback 的前提下增加首包探测能力 |
-| 责任链模式 | 后处理器链、模型降级链 | 多个处理步骤按顺序串联，灵活组合 |
-| 观察者模式 | StreamCallback | 流式事件的异步通知（onContent / onThinking / onComplete / onError） |
-| 外观模式 | RoutingLLMService / RoutingEmbeddingService / RoutingRerankService | 对上层屏蔽路由、降级、熔断的复杂性 |
-| AOP | @RagTraceRoot / @RagTraceNode / @ChatRateLimit / @IdempotentSubmit | 链路追踪、限流、幂等逻辑与业务代码解耦 |
+文档摄入采用 **6 节点流水线** 架构，由 `pipeline.py` 管线引擎编排执行，每个节点独立实现于 `nodes.py`。
 
----
-
-## 9. 可观测性
-
-### 9.1 全链路追踪
-
-基于 AOP 注解驱动的 Trace 框架，覆盖 RAG 问答的每一个环节：
+### 8.2 节点流程
 
 ```
-@RagTraceRoot("rag-chat")
-  ├── @RagTraceNode("query-rewrite")     — 问题重写耗时
-  ├── @RagTraceNode("intent-classify")   — 意图分类耗时
-  ├── @RagTraceNode("retrieval")         — 多路检索耗时
-  │     ├── @RagTraceNode("channel-1")   — 单通道耗时
-  │     └── @RagTraceNode("channel-2")   — 单通道耗时
-  ├── @RagTraceNode("rerank")            — 重排序耗时
-  ├── @RagTraceNode("prompt-build")      — Prompt 组装耗时
-  └── @RagTraceNode("llm-generate")      — LLM 生成耗时
+文档上传
+   │
+   ▼
+┌─────────┐    ┌─────────┐    ┌──────────┐    ┌─────────┐    ┌──────────┐    ┌──────────┐
+│ Fetcher │ →  │ Parser  │ →  │ Enhancer │ →  │ Chunker │ →  │ Enricher │ →  │ Indexer  │
+│ 文件获取 │    │ 文档解析 │    │ 内容增强  │    │ 文本分块 │    │ 向量丰富  │    │ 向量索引  │
+└─────────┘    └─────────┘    └──────────┘    └─────────┘    └──────────┘    └──────────┘
 ```
 
-每次 Trace 产生两条记录：
-- **t_rag_trace_run** — 记录整体运行信息（traceId、状态、总耗时、错误信息）
-- **t_rag_trace_node** — 记录每个节点的详细信息（支持树形嵌套、深度、类名、方法名、额外数据）
+**节点 1：Fetcher（文件获取）**
+- 从上传目录获取原始文档文件
+- 验证文件格式和大小
+- 将文件内容加载到内存
 
-### 9.2 入库过程追踪
+**节点 2：Parser（文档解析）**
+- 解析不同格式的文档（PDF、Word、Markdown 等）
+- 提取纯文本内容
+- 保留文档结构信息
 
-Ingestion Pipeline 的每个任务和节点都有独立的执行记录：
-- **t_ingestion_task** — 任务级别的状态、耗时、错误信息
-- **t_ingestion_task_node** — 节点级别的状态、耗时、输出、错误信息
-- **t_knowledge_document_chunk_log** — 分块过程的各阶段耗时（提取、分块、向量化、持久化）
+**节点 3：Enhancer（内容增强）**
+- 对解析后的文本进行预处理
+- 清洗噪声数据
+- 标准化文本格式
 
----
+**节点 4：Chunker（文本分块）**
+- 将长文本按策略切分为多个 chunk
+- 每个 chunk 保持语义完整性
+- 记录分块元数据（位置、上下文等）
 
-## 10. 扩展点设计
+**节点 5：Enricher（向量丰富）**
+- 调用硅基流动 Embedding API（Qwen/Qwen3-Embedding-8B）
+- 为每个 chunk 生成向量表示
+- 附加元数据信息
 
-Ragent 的核心模块均预留了扩展点，新增能力无需修改框架代码：
+**节点 6：Indexer（向量索引）**
+- 将 chunk 及其向量写入 PostgreSQL（通过 pgvector 扩展）
+- 更新 `t_knowledge_chunk` 表
+- 通过 asyncpg 回写 `chunk_count` 到文档记录
 
-| 扩展能力 | 方式 | 说明 |
-|---|---|---|
-| 新增检索通道 | 实现 SearchChannel 接口，注册为 Spring Bean | 自动参与多路检索 |
-| 新增后处理器 | 实现 SearchResultPostProcessor 接口 | 自动加入处理链 |
-| 新增 MCP 工具 | 实现 MCPToolExecutor 接口，加 @Component | 自动被 MCPToolRegistry 发现 |
-| 新增入库节点 | 实现 IngestionNode 接口 | 可插入 Pipeline 任意位置 |
-| 新增数据抓取策略 | 实现 DocumentFetcher 接口 | 支持新的数据源类型 |
-| 新增分块策略 | 实现 ChunkingStrategy 接口 | 支持新的分块算法 |
-| 新增模型供应商 | 实现 ChatClient / EmbeddingClient / RerankClient | 配置候选列表即可参与路由 |
-| 新增向量数据库 | 实现 VectorStoreService / VectorStoreAdmin | 支持新的向量存储引擎 |
+### 8.3 异步执行
 
----
-
-## 11. 前端路由与页面结构
-
-### 11.1 路由总览
-
-| 路径 | 守卫 | 页面 | 说明 |
-|---|---|---|---|
-| / | 无 | HomeRedirect | 自动跳转 |
-| /login | RedirectIfAuth | LoginPage | 登录页 |
-| /chat | RequireAuth | ChatPage | 聊天主页 |
-| /chat/:sessionId | RequireAuth | ChatPage | 指定会话聊天 |
-| /admin/dashboard | RequireAdmin | DashboardPage | 仪表盘 |
-| /admin/knowledge | RequireAdmin | KnowledgeListPage | 知识库列表 |
-| /admin/knowledge/:kbId | RequireAdmin | KnowledgeDocumentsPage | 文档管理 |
-| /admin/knowledge/:kbId/docs/:docId | RequireAdmin | KnowledgeChunksPage | 分块管理 |
-| /admin/intent-tree | RequireAdmin | IntentTreePage | 意图树可视化 |
-| /admin/intent-list | RequireAdmin | IntentListPage | 意图节点列表 |
-| /admin/intent-list/:id/edit | RequireAdmin | IntentEditPage | 意图节点编辑 |
-| /admin/ingestion | RequireAdmin | IngestionPage | 入库流水线管理 |
-| /admin/traces | RequireAdmin | RagTracePage | 链路追踪列表 |
-| /admin/traces/:traceId | RequireAdmin | RagTraceDetailPage | 链路追踪详情 |
-| /admin/settings | RequireAdmin | SystemSettingsPage | 系统设置 |
-| /admin/sample-questions | RequireAdmin | SampleQuestionPage | 示例问题管理 |
-| /admin/mappings | RequireAdmin | QueryTermMappingPage | 关键词映射管理 |
-| /admin/users | RequireAdmin | UserListPage | 用户管理 |
-
-### 11.2 前端状态管理
-
-| Store | 管理范围 | 持久化 |
-|---|---|---|
-| authStore | 用户认证状态、token、当前用户信息 | localStorage |
-| chatStore | 会话列表、消息、SSE 流式状态、深度思考模式 | 不持久化 |
-| themeStore | 深色/浅色主题切换 | localStorage |
+- 管线通过 **Celery 异步任务** 执行（定义于 `tasks.py`）
+- 任务分发到 4 个队列：`ingestion.task`、`ingestion.chunk`、`rag.feedback`、`celery`
+- Celery Worker 并发度 `-c 4`，支持并行处理多个文档
 
 ---
 
-## 12. 部署架构
+## 9. AI 服务架构
+
+### 9.1 LLM 服务
+
+- **服务商**：智谱 AI（GLM）
+- **调用方式**：通过 litellm 统一调用，模型标识 `openai/glm-4-flash`
+- **功能**：智能对话、问题重写、意图识别、会话摘要生成
+
+### 9.2 Embedding 服务
+
+- **服务商**：硅基流动（SiliconFlow）
+- **模型**：Qwen/Qwen3-Embedding-8B
+- **功能**：文本向量化，用于知识库 chunk 的语义检索
+
+### 9.3 可靠性保障
+
+- **model_selector**：根据场景和负载选择合适的模型
+- **circuit_breaker**：熔断器模式，当 AI 服务异常时自动熔断，避免级联故障
+
+---
+
+## 10. 向量检索方案
+
+系统采用 **pgvector**（PostgreSQL 扩展）作为向量存储和检索引擎，替代独立的 Milvus 集群：
+
+**优势：**
+- 架构简化：关系数据与向量数据统一在 PostgreSQL 中管理
+- 运维成本低：减少一个独立中间件的部署和维护
+- 事务一致性：关系查询和向量检索可以在同一个 SQL 中完成
+- pgvector 原生支持 IVFFlat 和 HNSW 索引，满足性能需求
+
+**使用方式：**
+- `t_knowledge_chunk` 表中包含 pgvector 向量字段
+- 通过 SQLAlchemy async session 执行向量相似度查询
+- 支持余弦相似度、内积、L2 距离等度量方式
+
+---
+
+## 11. 项目结构
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                           部署架构                                    │
-│                                                                      │
-│  ┌────────────┐     ┌─────────────────────────────────────────────┐  │
-│  │  Nginx     │     │           Spring Boot 主应用                  │  │
-│  │  静态资源   │────▶│           (bootstrap 模块)                    │  │
-│  │  反向代理   │     │                                              │  │
-│  └────────────┘     │  ┌──────────┐ ┌──────────┐ ┌────────────┐  │  │
-│                      │  │framework │ │infra-ai  │ │ bootstrap   │  │  │
-│                      │  │  通用框架 │ │ AI抽象层  │ │  业务逻辑   │  │  │
-│                      │  └──────────┘ └──────────┘ └────────────┘  │  │
-│                      └─────────────────────────────────────────────┘  │
-│                                                                      │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐     │
-│  │ PostgreSQL │  │   Milvus   │  │   Redis    │  │  RustFS    │     │
-│  │ 关系数据库  │  │ 向量数据库  │  │ 缓存/限流  │  │ 对象存储    │     │
-│  │ + pgvector │  │            │  │ /分布式锁   │  │ (S3兼容)   │     │
-│  └────────────┘  └────────────┘  └────────────┘  └────────────┘     │
-│                                                                      │
-│  ┌────────────┐  ┌────────────┐  ┌────────────┐                     │
-│  │ RocketMQ   │  │ MCP Server │  │  Ollama    │                     │
-│  │ 消息队列    │  │ (独立进程)  │  │ 本地模型    │                     │
-│  └────────────┘  │  端口 9099  │  └────────────┘                     │
-│                   └────────────┘                                      │
-│                                                                      │
-│  ┌──────────────────────────────────────────┐                        │
-│  │     外部模型服务                           │                        │
-│  │  百炼(阿里云) / SiliconFlow / 其他兼容API  │                        │
-│  └──────────────────────────────────────────┘                        │
-└──────────────────────────────────────────────────────────────────────┘
+src/ragent/
+├── main.py                          # 应用入口，create_app() 工厂函数
+├── app/                             # 应用层
+│   ├── router.py                    # 主路由 (~815行)
+│   ├── auth_router.py               # 认证路由
+│   ├── deps.py                      # 依赖注入 (CurrentUser, DbSession)
+│   ├── rate_limit.py                # IP+Redis 滑动窗口限流中间件
+│   └── middleware.py                # Trace/RequestContext/ExceptionHandler 中间件
+├── common/                          # 公共层
+│   ├── models.py                    # 数据模型 (577行, 17张表)
+│   ├── snowflake.py                 # Snowflake ID 生成器
+│   ├── safe_json.py                 # SafeJSONResponse (BigInt精度修复)
+│   └── json_utils.py               # LargeIntJSONEncoder
+├── infra/                           # 基础设施层
+│   ├── database.py                  # asyncpg + SQLAlchemy async session
+│   ├── cache.py                     # Redis 连接池
+│   ├── auth.py                      # JWT签发/验证 + bcrypt密码哈希
+│   └── ai/                          # AI 服务层
+│       ├── llm_service.py           # LLM 调用服务
+│       ├── embedding_service.py     # 文本向量化服务
+│       ├── model_selector.py        # 模型选择器
+│       └── circuit_breaker.py       # 熔断器
+├── ingestion/                       # 文档摄入管线
+│   ├── pipeline.py                  # 6节点管线引擎
+│   ├── nodes.py                     # Fetcher/Parser/Enhancer/Chunker/Enricher/Indexer
+│   ├── tasks.py                     # Celery 任务 + asyncpg chunk_count 回写
+│   └── context.py                   # IngestionContext
+└── config/                          # 配置
+    └── settings.py                  # pydantic-settings, 环境变量/.env
 ```
 
 ---
 
-## 13. 关键流程时序
+## 12. 关键设计决策
 
-### 13.1 SSE 流式对话时序
+### 12.1 为什么选择 pgvector 而非独立向量数据库（Milvus）
 
-```
- 用户              Frontend              Bootstrap             Infra-AI           Model Provider
-  │                   │                     │                     │                    │
-  │  发送问题          │                     │                     │                    │
-  │──────────────────▶│                     │                     │                    │
-  │                   │  GET /rag/v3/chat   │                     │                    │
-  │                   │  (SSE 连接)          │                     │                    │
-  │                   │────────────────────▶│                     │                    │
-  │                   │                     │  排队限流检查         │                    │
-  │                   │                     │  问题重写            │                    │
-  │                   │                     │  意图分类            │                    │
-  │                   │                     │────────────────────▶│                    │
-  │                   │                     │                     │  多路检索           │
-  │                   │                     │                     │  Prompt组装         │
-  │                   │                     │                     │  首包探测           │
-  │                   │                     │                     │───────────────────▶│
-  │                   │                     │                     │                    │
-  │                   │  SSE: meta事件       │                     │  SSE: content事件  │
-  │                   │◀────────────────────│                     │◀───────────────────│
-  │                   │                     │                     │                    │
-  │  SSE: thinking    │  SSE: message事件    │                     │  SSE: thinking事件 │
-  │◀──────────────────│◀────────────────────│                     │◀───────────────────│
-  │                   │                     │                     │                    │
-  │  SSE: 内容片段    │  SSE: message事件    │                     │  SSE: content事件  │
-  │◀──────────────────│◀────────────────────│                     │◀───────────────────│
-  │                   │                     │                     │                    │
-  │  ...              │  ...                │                     │  ...               │
-  │                   │                     │                     │                    │
-  │  SSE: 完成        │  SSE: finish事件     │                     │                    │
-  │◀──────────────────│◀────────────────────│                     │                    │
-  │                   │                     │  持久化消息          │                    │
-  │                   │                     │  记录Trace           │                    │
-```
+- **架构简洁**：一个 PostgreSQL 实例同时承载关系数据和向量数据，减少服务数量
+- **事务一致**：文档元数据和 chunk 向量在同一数据库中，可以利用数据库事务保证一致性
+- **运维友好**：减少独立向量数据库的部署、监控、备份成本
+- **性能足够**：对于中等规模知识库（百万级 chunk），pgvector 的 HNSW 索引性能完全满足需求
 
-### 13.2 文档入库时序
+### 12.2 为什么选择 Celery + Redis 而非 RocketMQ
 
-```
- 管理员            Frontend            Bootstrap          IngestionEngine       Milvus/pgvector
-  │                   │                   │                     │                      │
-  │  上传文档          │                   │                     │                      │
-  │──────────────────▶│                   │                     │                      │
-  │                   │  POST /ingestion  │                     │                      │
-  │                   │  /tasks/upload    │                     │                      │
-  │                   │──────────────────▶│                     │                      │
-  │                   │                   │  创建Task记录         │                      │
-  │                   │                   │─────────────────────▶│                      │
-  │                   │                   │                     │                      │
-  │                   │                   │                     │  FetcherNode         │
-  │                   │                   │                     │  (抓取文件)           │
-  │                   │                   │                     │                      │
-  │                   │                   │                     │  ParserNode          │
-  │                   │                   │                     │  (Tika解析)          │
-  │                   │                   │                     │                      │
-  │                   │                   │                     │  EnhancerNode        │
-  │                   │                   │                     │  (LLM增强)           │
-  │                   │                   │                     │                      │
-  │                   │                   │                     │  ChunkerNode         │
-  │                   │                   │                     │  (分块+向量化)        │
-  │                   │                   │                     │                      │
-  │                   │                   │                     │  EnricherNode        │
-  │                   │                   │                     │  (LLM分块丰富)       │
-  │                   │                   │                     │                      │
-  │                   │                   │                     │  IndexerNode         │
-  │                   │                   │                     │─────────────────────▶│
-  │                   │                   │                     │  (写入向量)           │
-  │                   │                   │                     │◀─────────────────────│
-  │                   │                   │                     │                      │
-  │                   │                   │  更新Task状态        │                      │
-  │                   │                   │◀─────────────────────│                      │
-  │                   │  返回结果          │                     │                      │
-  │                   │◀──────────────────│                     │                      │
-  │  入库完成          │                   │                     │                      │
-  │◀──────────────────│                   │                     │                      │
-```
+- **Python 生态原生**：Celery 是 Python 最成熟的分布式任务队列框架
+- **部署简单**：Redis 同时作为缓存和消息队列，不需要额外的消息中间件
+- **多 DB 复用**：Redis 通过不同 DB 编号隔离缓存和队列职责
+
+### 12.3 为什么选择 FastAPI 而非 Spring Boot
+
+- **Python 全栈统一**：后端、AI 推理、数据处理使用同一语言，降低技术栈复杂度
+- **异步原生**：FastAPI 基于 async/await，天然适配 IO 密集型的 RAG 场景
+- **Pydantic 集成**：自动数据校验和 OpenAPI 文档生成
+- **轻量高效**：相比 Spring Boot 的庞大生态，FastAPI 更加轻量灵活
+
+### 12.4 BigInt 精度修复
+
+- JavaScript 的 Number 类型最大安全整数为 2^53 - 1
+- Snowflake ID 超出此范围，前端 JSON 解析会丢失精度
+- 通过 `SafeJSONResponse` 和 `LargeIntJSONEncoder` 将大整数转为字符串传输
 
 ---
 
-## 14. 总结
+## 13. 监控体系
 
-Ragent 的架构设计围绕以下核心原则展开：
+### 13.1 指标采集
 
-- **分层解耦**：framework / infra-ai / bootstrap 三层各司其职，换模型供应商不用改业务代码，换业务逻辑不用动基础设施
-- **接口驱动**：核心能力（检索通道、后处理器、MCP 工具、入库节点、模型客户端）全部面向接口编程，新增能力只需加实现类
-- **容错优先**：模型路由 + 熔断降级 + 首包探测 + 排队限流，确保单个组件故障不影响整体服务
-- **可观测性**：全链路 Trace + 入库节点日志 + 仪表盘监控，排查与调优有据可依
-- **事件驱动**：RocketMQ 解耦异步处理（文档分块、消息反馈），提升系统吞吐和响应速度
+- **Prometheus**（端口 9090）负责指标采集和存储
+- 采集目标包括：FastAPI 请求指标、Celery 任务指标、Redis 指标、PostgreSQL 指标
+
+### 13.2 可视化
+
+- **Grafana**（端口 3000）负责监控数据可视化
+- 预置面板：API 响应时间、错误率、Celery 任务队列深度、数据库连接池状态
+
+---
+
+## 14. 环境配置
+
+系统配置通过 `config/settings.py` 管理，基于 **pydantic-settings**：
+
+- 优先读取环境变量，回退到 `.env` 文件
+- 所有配置项均有类型注解和默认值
+- 配置项包括：数据库连接串、Redis URL、JWT 密钥、AI API Key、Celery Broker URL 等
