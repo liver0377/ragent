@@ -17,7 +17,7 @@ import {
 const { Text } = Typography;
 
 interface ChatMessage {
-  id: number;
+  id: number | string;
   role: 'user' | 'assistant';
   content: string;
 }
@@ -25,7 +25,7 @@ interface ChatMessage {
 export default function ChatPage() {
   // ---- 会话列表状态 ----
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConvId, setActiveConvId] = useState<number | null>(null);
+  const [activeConvId, setActiveConvId] = useState<number | string | null>(null);
   const [convLoading, setConvLoading] = useState(false);
 
   // ---- 聊天状态 ----
@@ -58,7 +58,7 @@ export default function ChatPage() {
   }, [messages]);
 
   // ---- 切换会话 ----
-  const switchConversation = async (convId: number) => {
+  const switchConversation = async (convId: number | string) => {
     // 停止当前流
     abortRef.current?.abort();
     setSending(false);
@@ -86,7 +86,7 @@ export default function ChatPage() {
   };
 
   // ---- 删除会话 ----
-  const onDeleteConversation = async (convId: number) => {
+  const onDeleteConversation = async (convId: number | string) => {
     try {
       await deleteConversation(convId);
       message.success('会话已删除');

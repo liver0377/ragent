@@ -4,8 +4,8 @@
 import client from './client';
 
 export interface UploadResult {
-  doc_id: number;
-  task_id: number;
+  doc_id: number | string;
+  task_id: number | string;
   celery_task_id: string;
   status: string;
   message: string;
@@ -26,7 +26,7 @@ export interface TaskStatus {
 /** 批量上传文档（multipart/form-data） */
 export async function uploadDocuments(
   files: File[],
-  knowledgeBaseId: number,
+  knowledgeBaseId: number | string,
 ): Promise<UploadResult[]> {
   const formData = new FormData();
   files.forEach((f) => formData.append('files', f));

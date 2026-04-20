@@ -19,8 +19,8 @@ export interface ChatCallbacks {
 /** SSE 流式聊天 */
 export function chatStream(
   question: string,
-  conversationId?: number,
-  knowledgeBaseId?: number,
+  conversationId?: number | string,
+  knowledgeBaseId?: number | string,
   callbacks?: ChatCallbacks,
 ): AbortController {
   const controller = new AbortController();

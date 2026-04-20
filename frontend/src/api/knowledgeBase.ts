@@ -4,12 +4,12 @@
 import client from './client';
 
 export interface KnowledgeBase {
-  id: number;
+  id: number | string;
   name: string;
   description: string;
   embedding_model: string;
   collection_name: string;
-  department_id: number | null;
+  department_id: number | string | null;
   document_count?: number;
   created_at: string | null;
   updated_at: string | null;
@@ -39,7 +39,7 @@ export async function listKnowledgeBases(
 }
 
 /** 知识库详情 */
-export async function getKnowledgeBase(kbId: number): Promise<KnowledgeBase> {
+export async function getKnowledgeBase(kbId: number | string): Promise<KnowledgeBase> {
   const res = await client.get(`/knowledge-bases/${kbId}`);
   return res.data.data;
 }
@@ -53,6 +53,6 @@ export async function createKnowledgeBase(
 }
 
 /** 删除知识库 */
-export async function deleteKnowledgeBase(kbId: number): Promise<void> {
+export async function deleteKnowledgeBase(kbId: number | string): Promise<void> {
   await client.delete(`/knowledge-bases/${kbId}`);
 }

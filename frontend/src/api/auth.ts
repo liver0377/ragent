@@ -11,7 +11,7 @@ export interface LoginParams {
 export interface RegisterParams extends LoginParams {}
 
 export interface UserInfo {
-  id: number;
+  id: number | string;
   username: string;
   role: string;
   avatar: string | null;

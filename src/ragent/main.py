@@ -28,6 +28,7 @@ from ragent.app.middleware import (
 from ragent.app.auth_router import router as auth_router
 from ragent.app.router import router
 from ragent.common.logging import get_logger, setup_logging
+from ragent.common.safe_json import SafeJSONResponse
 from ragent.config.settings import get_settings
 
 logger: logging.Logger = get_logger(__name__)
@@ -128,6 +129,7 @@ def create_app() -> FastAPI:
         description="RAG 智能问答平台 API",
         version=settings.APP_VERSION,
         lifespan=lifespan,
+        default_response_class=SafeJSONResponse,
     )
 
     # CORS 配置

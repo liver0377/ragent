@@ -29,7 +29,7 @@ const STATUS_MAP: Record<string, { color: string; icon: React.ReactNode }> = {
 };
 
 interface UploadRecord {
-  id: number;
+  id: number | string;
   filename: string;
   status: string;
   progress: number;
@@ -45,7 +45,7 @@ export default function KnowledgePage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [form] = Form.useForm();
-  const [deptMap, setDeptMap] = useState<Record<number, string>>({});
+  const [deptMap, setDeptMap] = useState<Record<number | string, string>>({});
 
   // ---- 上传 Modal 状态 ----
   const [uploadKb, setUploadKb] = useState<KnowledgeBase | null>(null);
@@ -130,7 +130,7 @@ export default function KnowledgePage() {
     fetchList();
     // 加载部门映射
     listDepartments().then((depts) => {
-      const map: Record<number, string> = {};
+      const map: Record<number | string, string> = {};
       depts.forEach((d) => { map[d.id] = d.name; });
       setDeptMap(map);
     }).catch(() => {});
@@ -153,7 +153,7 @@ export default function KnowledgePage() {
     }
   };
 
-  const onDelete = async (id: number) => {
+  const onDelete = async (id: number | string) => {
     try {
       await deleteKnowledgeBase(id);
       message.success('已删除');

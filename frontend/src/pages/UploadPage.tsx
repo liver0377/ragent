@@ -22,7 +22,7 @@ const STATUS_MAP: Record<string, { color: string; icon: React.ReactNode }> = {
 const ALLOWED_EXTS = ['.pdf', '.txt', '.md', '.docx', '.doc', '.csv', '.json', '.html'];
 
 interface UploadRecord {
-  id: number;
+  id: number | string;
   filename: string;
   kbName: string;
   status: string;

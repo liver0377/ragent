@@ -4,7 +4,7 @@
 import client from './client';
 
 export interface Department {
-  id: number;
+  id: number | string;
   name: string;
   description: string | null;
 }
