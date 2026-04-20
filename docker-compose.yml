@@ -80,7 +80,7 @@ services:
         condition: service_healthy
     command: ["uvicorn", "ragent.main:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
-      - ./tests/fixtures/pdfs:/data/pdfs:ro
+      - upload-data:/data/pdfs
     networks:
       - ragent-net
 
@@ -110,7 +110,7 @@ services:
         condition: service_healthy
     command: ["celery", "-A", "ragent.common.celery_worker", "worker", "-l", "info", "-c", "4", "-Q", "ingestion.task,ingestion.chunk,rag.feedback,celery"]
     volumes:
-      - ./tests/fixtures/pdfs:/data/pdfs:ro
+      - upload-data:/data/pdfs
     networks:
       - ragent-net
 
@@ -186,3 +186,5 @@ volumes:
     name: ragent-prometheus-data
   grafana-data:
     name: ragent-grafana-data
+  upload-data:
+    name: ragent-upload-data

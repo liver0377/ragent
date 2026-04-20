@@ -396,7 +396,7 @@ async def upload_document(
         return Result.error(code=403, message=err)
 
     # 确保存储目录存在
-    upload_dir = "/app/data/pdfs"
+    upload_dir = "/data/pdfs"
     os.makedirs(upload_dir, exist_ok=True)
 
     results = []
@@ -457,7 +457,7 @@ async def upload_document(
             task_id=task_id,
             pipeline_id=knowledge_base_id,
             source_type="local",
-            source_location=safe_filename,
+            source_location=file_path,  # 传完整路径，确保 worker 能找到文件
         )
 
         logger.info(
