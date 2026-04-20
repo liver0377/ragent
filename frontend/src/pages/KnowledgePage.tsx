@@ -2,6 +2,7 @@
  * 知识库管理页面 —— 列表、创建、删除、上传文档
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Card, Button, Table, Modal, Form, Input, message, Popconfirm, Tag, Space, Empty,
   Progress, List,
@@ -9,7 +10,7 @@ import {
 import {
   PlusOutlined, DeleteOutlined, DatabaseOutlined, ReloadOutlined,
   UploadOutlined, FileTextOutlined, InboxOutlined, CheckCircleOutlined,
-  LoadingOutlined, CloseCircleOutlined,
+  LoadingOutlined, CloseCircleOutlined, EyeOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -38,6 +39,7 @@ interface UploadRecord {
 }
 
 export default function KnowledgePage() {
+  const navigate = useNavigate();
   const [list, setList] = useState<KnowledgeBase[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -204,16 +206,24 @@ export default function KnowledgePage() {
     {
       title: '操作',
       key: 'action',
-      width: 160,
+      width: 240,
       render: (_, record) => (
         <Space>
+          <Button
+            type="link"
+            icon={<EyeOutlined />}
+            size="small"
+            onClick={() => navigate(`/knowledge/${record.id}/documents`)}
+          >
+            查看文档
+          </Button>
           <Button
             type="link"
             icon={<UploadOutlined />}
             size="small"
             onClick={() => openUploadModal(record)}
           >
-            上传文档
+            上传
           </Button>
           <Popconfirm
             title={`确定删除「${record.name}」？`}

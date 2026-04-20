@@ -9,6 +9,7 @@ import RequireAuth from './components/RequireAuth';
 import MainLayout from './layouts/MainLayout';
 import LoginPage from './pages/LoginPage';
 import KnowledgePage from './pages/KnowledgePage';
+import DocumentsPage from './pages/DocumentsPage';
 import UploadPage from './pages/UploadPage';
 import ChatPage from './pages/ChatPage';
 
@@ -32,6 +33,7 @@ export default function App() {
             >
               <Route index element={<Navigate to="/knowledge" replace />} />
               <Route path="knowledge" element={<KnowledgePage />} />
+              <Route path="knowledge/:kbId/documents" element={<DocumentsPage />} />
               <Route path="upload" element={<UploadPage />} />
               <Route path="chat" element={<ChatPage />} />
             </Route>

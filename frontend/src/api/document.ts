@@ -40,6 +40,44 @@ export async function uploadDocuments(
   return data.details || [];
 }
 
+/** 文档信息 */
+export interface DocumentInfo {
+  id: number | string;
+  doc_name: string;
+  file_type: string;
+  enabled: boolean;
+  chunk_count: number;
+  chunk_strategy: string;
+  process_mode: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 文档列表结果 */
+export interface DocumentListResult {
+  items: DocumentInfo[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+/** 知识库文档列表（分页） */
+export async function listDocuments(
+  kbId: number | string,
+  page = 1,
+  pageSize = 20,
+): Promise<DocumentListResult> {
+  const res = await client.get(`/knowledge-bases/${kbId}/documents`, {
+    params: { page, page_size: pageSize },
+  });
+  return res.data.data;
+}
+
+/** 删除文档 */
+export async function deleteDocument(docId: number | string): Promise<void> {
+  await client.delete(`/documents/${docId}`);
+}
+
 /** 查询摄入任务状态 */
 export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   const res = await client.get(`/ingestion/tasks/${taskId}`);

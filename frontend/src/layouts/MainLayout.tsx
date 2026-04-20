@@ -51,6 +51,9 @@ export default function MainLayout() {
     ],
   };
 
+  // Support highlighting parent menu for sub-routes like /knowledge/:kbId/documents
+  const activeMenuKey = location.pathname.startsWith('/knowledge') ? '/knowledge' : location.pathname;
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
@@ -83,7 +86,7 @@ export default function MainLayout() {
         </div>
         <Menu
           mode="inline"
-          selectedKeys={[location.pathname]}
+          selectedKeys={[activeMenuKey]}
           items={menuItems}
           onClick={({ key }) => navigate(key)}
           style={{ borderRight: 'none', marginTop: 8 }}

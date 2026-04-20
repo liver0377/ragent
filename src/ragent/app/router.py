@@ -487,6 +487,107 @@ async def upload_document(
     })
 
 
+# ---------------------------------------------------------------------------
+# 文档管理
+# ---------------------------------------------------------------------------
+
+
+@router.get("/knowledge-bases/{kb_id}/documents", summary="知识库文档列表")
+async def list_documents(
+    kb_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
+) -> Result[Any]:
+    """查询指定知识库下的文档列表（分页，需认证，部门隔离）。"""
+    # 验证知识库存在
+    kb_result = await db.execute(
+        select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
+    )
+    kb = kb_result.scalar_one_or_none()
+    if kb is None:
+        return Result.error(code=404, message=f"知识库 {kb_id} 不存在")
+
+    # 部门权限检查
+    err = _check_kb_dept_access(kb, current_user)
+    if err:
+        return Result.error(code=403, message=err)
+
+    # 构建查询
+    base_query = select(KnowledgeDocument).where(KnowledgeDocument.kb_id == kb_id)
+
+    # 总数
+    count_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
+    total = count_result.scalar() or 0
+
+    # 分页
+    offset = (page - 1) * page_size
+    result = await db.execute(
+        base_query
+        .order_by(KnowledgeDocument.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    docs = result.scalars().all()
+
+    items = [
+        {
+            "id": doc.id,
+            "doc_name": doc.doc_name,
+            "file_type": doc.file_type,
+            "enabled": doc.enabled,
+            "chunk_count": doc.chunk_count,
+            "chunk_strategy": doc.chunk_strategy,
+            "process_mode": doc.process_mode,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+            "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+        }
+        for doc in docs
+    ]
+
+    return Result.success(data={
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+@router.delete("/documents/{doc_id}", summary="删除文档")
+async def delete_document(
+    doc_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> Result[Any]:
+    """删除单个文档及其关联的分块记录（需认证，部门隔离）。"""
+    result = await db.execute(
+        select(KnowledgeDocument).where(KnowledgeDocument.id == doc_id)
+    )
+    doc = result.scalar_one_or_none()
+
+    if doc is None:
+        return Result.error(code=404, message=f"文档 {doc_id} 不存在")
+
+    # 通过关联的知识库进行部门权限检查
+    kb_result = await db.execute(
+        select(KnowledgeBase).where(KnowledgeBase.id == doc.kb_id)
+    )
+    kb = kb_result.scalar_one_or_none()
+    if kb is not None:
+        err = _check_kb_dept_access(kb, current_user)
+        if err:
+            return Result.error(code=403, message=err)
+
+    await db.delete(doc)
+
+    logger.info("文档删除: doc_id=%s, doc_name=%s, kb=%s, user=%s", doc_id, doc.doc_name, doc.kb_id, current_user.username)
+
+    return Result.success(data={"message": f"文档 '{doc.doc_name}' 已删除"})
+
+
 @router.get("/ingestion/tasks/{task_id}")
 async def get_ingestion_task_status(task_id: str) -> Result[Any]:
     """查询文档入库任务状态。"""
