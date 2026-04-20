@@ -68,6 +68,35 @@ DEFAULT_PIPELINE_NODES: list[dict[str, Any]] = [
 #  辅助函数：序列化 IngestionContext → dict
 # ---------------------------------------------------------------------------
 
+async def _update_doc_chunk_count_async(source_location: str, chunk_count: int) -> None:
+    """回写 chunk_count 到 t_knowledge_document 表。
+
+    使用 asyncpg 异步连接，在管线执行的同一事件循环中运行。
+
+    Args:
+        source_location: 文件路径（如 /data/pdfs/304629849111134208_xxx.pdf）。
+        chunk_count: 分块数量。
+    """
+    import asyncpg as _asyncpg
+
+    from ragent.config.settings import get_settings
+
+    settings = get_settings()
+    db_url: str = getattr(settings, "DATABASE_URL", "")
+
+    conn = await _asyncpg.connect(db_url)
+    try:
+        await conn.execute(
+            "UPDATE t_knowledge_document SET chunk_count = $1 WHERE file_url = $2",
+            chunk_count, source_location,
+        )
+        logger.info(
+            "已回写 chunk_count=%d, file_url=%s", chunk_count, source_location,
+        )
+    finally:
+        await conn.close()
+
+
 def _serialize_context(ctx: IngestionContext) -> dict[str, Any]:
     """将 IngestionContext 序列化为可 JSON 化的字典。
 
@@ -180,7 +209,20 @@ def run_ingestion_pipeline(
             meta={"stage": "管线执行中", "progress": 20},
         )
 
-        ctx = asyncio.run(pipeline.execute(ctx))
+        async def _run_pipeline_and_update() -> None:
+            """执行管线并回写 chunk_count 到数据库。"""
+            nonlocal ctx
+            ctx = await pipeline.execute(ctx)
+
+            # 回写 chunk_count 到 t_knowledge_document 表
+            chunk_count = len(ctx.chunks)
+            if chunk_count > 0:
+                try:
+                    await _update_doc_chunk_count_async(source_location, chunk_count)
+                except Exception as db_exc:
+                    logger.warning("回写 chunk_count 失败: %s", db_exc)
+
+        ctx = asyncio.run(_run_pipeline_and_update())
 
         elapsed = (time.monotonic() - start_time) * 1000
 
