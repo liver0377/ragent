@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from starlette.responses import StreamingResponse
@@ -44,6 +44,7 @@ class ChatRequest(BaseModel):
 
     question: str = Field(..., min_length=1, description="用户问题")
     conversation_id: int | None = Field(default=None, description="会话 ID")
+    knowledge_base_id: int | None = Field(default=None, description="知识库 ID（可选，指定检索范围）")
     user_id: int | None = Field(default=None, description="用户 ID")
 
 
@@ -86,9 +87,16 @@ async def health_check() -> dict[str, Any]:
 
 
 @router.post("/chat")
-async def chat(request: ChatRequest) -> StreamingResponse:
-    """RAG 问答接口 —— 流式 SSE 响应。"""
-    logger.info("收到问答请求 | question='%s' | conv_id=%s", request.question[:50], request.conversation_id)
+async def chat(
+    request: ChatRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> StreamingResponse:
+    """RAG 问答接口 —— 流式 SSE 响应（需认证）。"""
+    logger.info(
+        "收到问答请求 | user=%s | question='%s' | conv_id=%s",
+        current_user.username, request.question[:50], request.conversation_id,
+    )
 
     from ragent.infra.ai.embedding_service import EmbeddingService
     from ragent.infra.ai.llm_service import LLMService
@@ -107,7 +115,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
     events = chain.ask(
         question=request.question,
         conversation_id=request.conversation_id,
-        user_id=request.user_id,
+        user_id=current_user.id,
+        db_session=db,
     )
 
     return create_sse_response(events)
@@ -304,73 +313,120 @@ async def delete_knowledge_base(
 
 @router.post("/documents/upload")
 async def upload_document(
-    request: DocumentUploadRequest,
-    db: DbSession,
-    current_user: CurrentUser,
+    knowledge_base_id: int = Form(..., description="目标知识库 ID"),
+    files: list[UploadFile] = File(..., description="上传的文件（支持多文件）"),
+    db: DbSession = None,
+    current_user: CurrentUser = None,
 ) -> Result[Any]:
-    """上传文档到知识库，提交异步摄入任务（需认证）。
+    """批量上传文档到知识库（multipart/form-data），提交异步摄入任务（需认证）。
 
-    流程：
+    流程（每个文件）：
         1. 验证知识库存在
-        2. 创建文档记录
-        3. 生成 Snowflake task_id
+        2. 将文件保存到 data/pdfs/ 目录
+        3. 创建文档记录
         4. 通过 Celery 投递异步摄入任务
 
     Args:
-        request: 文档上传请求体。
+        knowledge_base_id: 目标知识库 ID（表单字段）。
+        files: 上传的文件列表。
         db: 异步数据库会话。
         current_user: 当前登录用户。
 
     Returns:
-        Result 包含 task_id 和状态。
+        Result 包含每个文件的 task_id 和状态。
     """
+    import os
+    import shutil
+
     from ragent.ingestion.tasks import run_ingestion_pipeline
+
+    # 解析 db 和 current_user（FastAPI 注入的参数会被自动解析）
+    if db is None or current_user is None:
+        return Result.error(code=500, message="服务内部错误")
 
     # 验证知识库存在
     kb_result = await db.execute(
-        select(KnowledgeBase).where(KnowledgeBase.id == request.knowledge_base_id)
+        select(KnowledgeBase).where(KnowledgeBase.id == knowledge_base_id)
     )
     kb = kb_result.scalar_one_or_none()
     if kb is None:
-        return Result.error(code=404, message=f"知识库 {request.knowledge_base_id} 不存在")
+        return Result.error(code=404, message=f"知识库 {knowledge_base_id} 不存在")
 
-    # 创建文档记录
-    doc_id = generate_id()
-    doc = KnowledgeDocument(
-        id=doc_id,
-        kb_id=request.knowledge_base_id,
-        doc_name=request.filename,
-        file_url=f"/data/pdfs/{request.filename}",
-        file_type=request.filename.rsplit(".", 1)[-1].lower() if "." in request.filename else "unknown",
-        enabled=True,
-        chunk_count=0,
-        chunk_strategy="fixed",
-        pipeline_id=None,
-        process_mode="auto",
-    )
-    db.add(doc)
-    await db.flush()
+    # 确保存储目录存在
+    upload_dir = "/app/data/pdfs"
+    os.makedirs(upload_dir, exist_ok=True)
 
-    # 提交 Celery 异步任务
-    task_id = generate_id()
-    celery_result = run_ingestion_pipeline.delay(
-        task_id=task_id,
-        pipeline_id=request.knowledge_base_id,
-        source_type="local",
-        source_location=request.filename,
-    )
+    results = []
+    for upload_file in files:
+        filename = upload_file.filename or "unknown"
+        file_ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "unknown"
 
-    logger.info(
-        "文档上传: doc_id=%s, task_id=%s, celery_id=%s, kb=%s, file=%s, user=%s",
-        doc_id, task_id, celery_result.id, request.knowledge_base_id, request.filename, current_user.username,
-    )
+        # 检查文件类型
+        allowed_extensions = {"pdf", "txt", "md", "docx", "doc", "csv", "xlsx", "json"}
+        if file_ext not in allowed_extensions:
+            results.append({
+                "filename": filename,
+                "status": "REJECTED",
+                "message": f"不支持的文件类型: {file_ext}",
+            })
+            continue
+
+        # 保存文件到磁盘
+        file_path = os.path.join(upload_dir, filename)
+        with open(file_path, "wb") as f:
+            content = await upload_file.read()
+            f.write(content)
+
+        # 创建文档记录
+        doc_id = generate_id()
+        doc = KnowledgeDocument(
+            id=doc_id,
+            kb_id=knowledge_base_id,
+            doc_name=filename,
+            file_url=f"/data/pdfs/{filename}",
+            file_type=file_ext,
+            enabled=True,
+            chunk_count=0,
+            chunk_strategy="fixed",
+            pipeline_id=None,
+            process_mode="auto",
+        )
+        db.add(doc)
+        await db.flush()
+
+        # 提交 Celery 异步任务
+        task_id = generate_id()
+        celery_result = run_ingestion_pipeline.delay(
+            task_id=task_id,
+            pipeline_id=knowledge_base_id,
+            source_type="local",
+            source_location=filename,
+        )
+
+        logger.info(
+            "文档上传: doc_id=%s, task_id=%s, celery_id=%s, kb=%s, file=%s, user=%s, size=%d",
+            doc_id, task_id, celery_result.id, knowledge_base_id, filename,
+            current_user.username, len(content),
+        )
+
+        results.append({
+            "filename": filename,
+            "doc_id": doc_id,
+            "task_id": task_id,
+            "celery_task_id": celery_result.id,
+            "status": "PENDING",
+            "message": f"文档 {filename} 已提交摄入队列",
+            "file_size": len(content),
+        })
+
+    success_count = sum(1 for r in results if r["status"] == "PENDING")
+    fail_count = len(results) - success_count
 
     return Result.success(data={
-        "doc_id": doc_id,
-        "task_id": task_id,
-        "celery_task_id": celery_result.id,
-        "status": "PENDING",
-        "message": f"文档 {request.filename} 已提交摄入队列",
+        "total": len(results),
+        "success": success_count,
+        "failed": fail_count,
+        "details": results,
     })
 
 
@@ -422,3 +478,153 @@ async def get_ingestion_task_status(task_id: str) -> Result[Any]:
         "status": result.state,
         "info": str(result.info) if result.info else None,
     })
+
+
+# ---------------------------------------------------------------------------
+# 会话管理
+# ---------------------------------------------------------------------------
+
+
+class ConversationCreateRequest(BaseModel):
+    """创建会话请求体。"""
+
+    title: str = Field(default="新对话", max_length=200, description="会话标题")
+
+
+@router.post("/conversations", summary="创建会话")
+async def create_conversation(
+    request: ConversationCreateRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> Result[Any]:
+    """创建新会话（需认证）。"""
+    from ragent.common.models import Conversation as Conv
+
+    conv_id = generate_id()
+    conv = Conv(
+        id=conv_id,
+        user_id=current_user.id,
+        title=request.title,
+    )
+    db.add(conv)
+    await db.flush()
+
+    return Result.success(data={
+        "id": conv.id,
+        "title": conv.title,
+        "user_id": conv.user_id,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+    })
+
+
+@router.get("/conversations", summary="会话列表")
+async def list_conversations(
+    db: DbSession,
+    current_user: CurrentUser,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> Result[Any]:
+    """获取当前用户的会话列表（需认证，按最后消息时间倒序）。"""
+    from ragent.common.models import Conversation as Conv
+
+    # 只返回当前用户的会话
+    base_query = select(Conv).where(Conv.user_id == current_user.id)
+
+    count_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
+    total = count_result.scalar() or 0
+
+    offset = (page - 1) * page_size
+    result = await db.execute(
+        base_query.order_by(Conv.last_message_time.desc().nullsfirst(), Conv.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    convs = result.scalars().all()
+
+    items = [
+        {
+            "id": c.id,
+            "title": c.title,
+            "last_message_time": c.last_message_time.isoformat() if c.last_message_time else None,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in convs
+    ]
+
+    return Result.success(data={
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+@router.get("/conversations/{conv_id}", summary="会话详情")
+async def get_conversation(
+    conv_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> Result[Any]:
+    """获取会话详情及其消息列表（需认证，只能看自己的）。"""
+    from ragent.common.models import Conversation as Conv
+
+    result = await db.execute(
+        select(Conv).where(Conv.id == conv_id, Conv.user_id == current_user.id)
+    )
+    conv = result.scalar_one_or_none()
+
+    if conv is None:
+        return Result.error(code=404, message="会话不存在或无权访问")
+
+    # 获取消息
+    from ragent.common.models import Message as Msg
+    msg_result = await db.execute(
+        select(Msg)
+        .where(Msg.conversation_id == conv_id)
+        .order_by(Msg.created_at.asc())
+    )
+    messages = msg_result.scalars().all()
+
+    msg_items = [
+        {
+            "id": m.id,
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at.isoformat() if m.created_at else None,
+        }
+        for m in messages
+    ]
+
+    return Result.success(data={
+        "id": conv.id,
+        "title": conv.title,
+        "user_id": conv.user_id,
+        "last_message_time": conv.last_message_time.isoformat() if conv.last_message_time else None,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "messages": msg_items,
+    })
+
+
+@router.delete("/conversations/{conv_id}", summary="删除会话")
+async def delete_conversation(
+    conv_id: int,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> Result[Any]:
+    """删除会话及其所有消息（需认证，只能删自己的）。"""
+    from ragent.common.models import Conversation as Conv
+
+    result = await db.execute(
+        select(Conv).where(Conv.id == conv_id, Conv.user_id == current_user.id)
+    )
+    conv = result.scalar_one_or_none()
+
+    if conv is None:
+        return Result.error(code=404, message="会话不存在或无权访问")
+
+    await db.delete(conv)
+
+    logger.info("会话删除: conv_id=%s, user=%s", conv_id, current_user.username)
+    return Result.success(data={"message": "会话已删除"})

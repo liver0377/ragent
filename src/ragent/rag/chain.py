@@ -27,6 +27,7 @@ from ragent.rag.memory.session_memory import SessionMemoryManager
 from ragent.rag.prompt.prompt_builder import PromptBuilder
 from ragent.rag.retrieval.retriever import RetrievalEngine, SearchResult
 from ragent.rag.rewriter.query_rewriter import QueryRewriter
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ class RAGChain:
         question: str,
         conversation_id: int | None = None,
         user_id: int | None = None,
+        db_session: AsyncSession | None = None,
     ) -> AsyncIterator[SSEEvent]:
         """执行完整的 RAG 问答管线。
 
@@ -154,10 +156,14 @@ class RAGChain:
             question:        用户问题。
             conversation_id: 会话 ID，若为 ``None`` 则不保存记忆。
             user_id:         用户 ID（可选）。
+            db_session:      异步数据库会话，用于会话持久化。
 
         Yields:
             SSEEvent: SSE 事件流。
         """
+        # 注入数据库会话到 memory manager
+        if db_session is not None:
+            self._memory.set_db(db_session)
         # 手动创建根追踪段（async generator 不兼容装饰器）
         root_span = TraceSpan(name="rag-pipeline")
         trace_id = uuid.uuid4().hex
@@ -230,7 +236,7 @@ class RAGChain:
 
             # 步骤 7：保存到记忆
             if conversation_id is not None:
-                await self._save_memory(conversation_id, question, full_response)
+                await self._save_memory(conversation_id, question, full_response, user_id=user_id)
 
             # 步骤 8：发送结束事件
             yield sse_finish({
@@ -364,6 +370,7 @@ class RAGChain:
         conversation_id: int,
         question: str,
         answer: str,
+        user_id: int | None = None,
     ) -> None:
         """保存消息到会话记忆。
 
@@ -371,10 +378,11 @@ class RAGChain:
             conversation_id: 会话 ID。
             question:        用户问题。
             answer:          助手回答。
+            user_id:         用户 ID。
         """
         try:
-            await self._memory.add_message(conversation_id, "user", question)
-            await self._memory.add_message(conversation_id, "assistant", answer)
+            await self._memory.add_message(conversation_id, "user", question, user_id=user_id)
+            await self._memory.add_message(conversation_id, "assistant", answer, user_id=user_id)
 
             # 检查是否需要摘要
             if await self._memory.should_summarize(conversation_id):

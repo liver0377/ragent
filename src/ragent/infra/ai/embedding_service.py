@@ -131,11 +131,15 @@ class EmbeddingService:
         settings = get_settings()
         logger.debug("Embedding 直接调用: model=%s, 文本数量=%d", model, len(texts))
 
+        # Embedding 使用硅基流动 API
+        emb_api_key = settings.SILICONFLOW_API_KEY or settings.GLM_API_KEY
+        emb_api_base = settings.SILICONFLOW_API_BASE or settings.GLM_BASE_URL
+
         response = await litellm.aembedding(
             model=model,
             input=texts,
-            api_key=settings.GLM_API_KEY,
-            api_base=settings.GLM_BASE_URL,
+            api_key=emb_api_key,
+            api_base=emb_api_base,
         )
 
         # 按 index 排序确保顺序一致
@@ -183,11 +187,15 @@ class EmbeddingService:
                     candidate.timeout,
                     len(texts),
                 )
+                # Embedding 使用硅基流动 API
+                emb_api_key = settings.SILICONFLOW_API_KEY or settings.GLM_API_KEY
+                emb_api_base = settings.SILICONFLOW_API_BASE or settings.GLM_BASE_URL
+
                 response = await litellm.aembedding(
                     model=candidate.model_name,
                     input=texts,
-                    api_key=settings.GLM_API_KEY,
-                    api_base=settings.GLM_BASE_URL,
+                    api_key=emb_api_key,
+                    api_base=emb_api_base,
                     timeout=candidate.timeout,
                 )
 

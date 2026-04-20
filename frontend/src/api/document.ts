@@ -3,17 +3,13 @@
  */
 import client from './client';
 
-export interface UploadParams {
-  knowledge_base_id: number;
-  filename: string;
-}
-
 export interface UploadResult {
   doc_id: number;
   task_id: number;
   celery_task_id: string;
   status: string;
   message: string;
+  filename: string;
 }
 
 export interface TaskStatus {
@@ -27,10 +23,21 @@ export interface TaskStatus {
   error_message?: string;
 }
 
-/** 上传文档 → 提交摄入任务 */
-export async function uploadDocument(params: UploadParams): Promise<UploadResult> {
-  const res = await client.post('/documents/upload', params);
-  return res.data.data;
+/** 批量上传文档（multipart/form-data） */
+export async function uploadDocuments(
+  files: File[],
+  knowledgeBaseId: number,
+): Promise<UploadResult[]> {
+  const formData = new FormData();
+  files.forEach((f) => formData.append('files', f));
+  formData.append('knowledge_base_id', String(knowledgeBaseId));
+
+  const res = await client.post('/documents/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  // 后端返回 { total, success, failed, details: [...] }
+  const data = res.data.data;
+  return data.details || [];
 }
 
 /** 查询摄入任务状态 */

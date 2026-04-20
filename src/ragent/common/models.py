@@ -62,6 +62,23 @@ class TimestampMixin:
 # ===========================================================================
 
 
+class Department(TimestampMixin, Base):
+    """部门表 —— 企业组织架构中的部门，用于 RBAC 权限隔离。"""
+
+    __tablename__ = "t_department"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ---- 关系 ----
+    users: Mapped[list[User]] = relationship(back_populates="department")
+    knowledge_bases: Mapped[list[KnowledgeBase]] = relationship(back_populates="department")
+
+    def __repr__(self) -> str:
+        return f"<Department id={self.id} name={self.name!r}>"
+
+
 class User(TimestampMixin, Base):
     """用户表 —— 存储平台注册用户的基本信息。"""
 
@@ -72,8 +89,12 @@ class User(TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     role: Mapped[str] = mapped_column(String, nullable=False, default="user")
     avatar: Mapped[str | None] = mapped_column(String, nullable=True)
+    department_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("t_department.id"), nullable=True,
+    )
 
     # ---- 关系 ----
+    department: Mapped[Department | None] = relationship(back_populates="users")
     conversations: Mapped[list[Conversation]] = relationship(
         back_populates="user",
     )
@@ -195,8 +216,12 @@ class KnowledgeBase(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding_model: Mapped[str] = mapped_column(String, nullable=False)
     collection_name: Mapped[str] = mapped_column(String, nullable=False)
+    department_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("t_department.id"), nullable=True,
+    )
 
     # ---- 关系 ----
+    department: Mapped[Department | None] = relationship(back_populates="knowledge_bases")
     documents: Mapped[list[KnowledgeDocument]] = relationship(
         back_populates="knowledge_base",
     )

@@ -36,6 +36,7 @@ class RegisterRequest(BaseModel):
 
     username: str = Field(..., min_length=3, max_length=32, description="用户名")
     password: str = Field(..., min_length=6, max_length=128, description="密码")
+    department_id: int | None = Field(default=None, description="部门 ID")
 
 
 class LoginRequest(BaseModel):
@@ -98,6 +99,7 @@ async def register(
         username=request.username,
         password_hash=password_hash,
         role="user",
+        department_id=request.department_id,
     )
     db.add(user)
     await db.flush()
@@ -112,6 +114,7 @@ async def register(
             "id": user.id,
             "username": user.username,
             "role": user.role,
+            "department_id": user.department_id,
         },
         "access_token": token,
         "token_type": "bearer",
@@ -164,6 +167,7 @@ async def login(
             "username": user.username,
             "role": user.role,
             "avatar": user.avatar,
+            "department_id": user.department_id,
         },
         "access_token": token,
         "token_type": "bearer",
@@ -191,4 +195,5 @@ async def get_me(
         "username": current_user.username,
         "role": current_user.role,
         "avatar": current_user.avatar,
+        "department_id": current_user.department_id,
     })

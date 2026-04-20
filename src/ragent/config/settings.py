@@ -48,8 +48,16 @@ class Settings(BaseSettings):
         description="默认聊天模型（litellm 格式，需带 provider 前缀）",
     )
     EMBEDDING_MODEL: str = Field(
-        default="openai/embedding-3",
+        default="openai/Qwen/Qwen3-Embedding-8B",
         description="Embedding 模型（litellm 格式，需带 provider 前缀）",
+    )
+    SILICONFLOW_API_KEY: str = Field(
+        default="",
+        description="硅基流动 API Key（用于 Embedding 模型）",
+    )
+    SILICONFLOW_API_BASE: str = Field(
+        default="https://api.siliconflow.cn/v1",
+        description="硅基流动 API Base URL",
     )
 
     # ==================== 基础设施配置 ====================

@@ -64,27 +64,28 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+asyncpg://ragent:ragent_secret_2026@postgres:5432/ragent
-      - CELERY_BROKER_URL=redis://redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      DATABASE_URL: "postgresql+asyncpg://ragent:ragent_secret_2026@postgres:5432/ragent"
+      REDIS_URL: "redis://redis:6379/0"
+      CELERY_BROKER_URL: "redis://redis:6379/1"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/2"
+      GLM_API_KEY: "4504e93870d94c269d2024ed4883bff9.TRUOA9FvRsS2H7Rf"
+      GLM_BASE_URL: "https://open.bigmodel.cn/api/coding/paas/v4"
+      GLM_MODEL: "openai/glm-4-flash"
+      SILICONFLOW_API_KEY: "sk-mipwwquycjbjhghonlduaffmgcvpkiwhwtogjbnkbcliuzar"
+      EMBEDDING_MODEL: "Qwen/Qwen3-Embedding-8B"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    command: ["uvicorn", "ragent.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./tests/fixtures/pdfs:/data/pdfs:ro
     networks:
       - ragent-net
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
-      interval: 15s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-    command: ["gunicorn", "ragent.main:app", "-c", "deploy/gunicorn.conf.py"]
 
   # ---------------------------------------------------------------------------
-  # Ragent Worker — Celery 异步任务 Worker
+  # Ragent Worker — Celery 异步任务处理
   # ---------------------------------------------------------------------------
   ragent-worker:
     build:
@@ -93,10 +94,15 @@ services:
     container_name: ragent-worker
     restart: unless-stopped
     environment:
-      - REDIS_URL=redis://redis:6379/0
-      - DATABASE_URL=postgresql+asyncpg://ragent:ragent_secret_2026@postgres:5432/ragent
-      - CELERY_BROKER_URL=redis://redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      DATABASE_URL: "postgresql+asyncpg://ragent:ragent_secret_2026@postgres:5432/ragent"
+      REDIS_URL: "redis://redis:6379/0"
+      CELERY_BROKER_URL: "redis://redis:6379/1"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/2"
+      GLM_API_KEY: "4504e93870d94c269d2024ed4883bff9.TRUOA9FvRsS2H7Rf"
+      GLM_BASE_URL: "https://open.bigmodel.cn/api/coding/paas/v4"
+      GLM_MODEL: "openai/glm-4-flash"
+      SILICONFLOW_API_KEY: "sk-mipwwquycjbjhghonlduaffmgcvpkiwhwtogjbnkbcliuzar"
+      EMBEDDING_MODEL: "Qwen/Qwen3-Embedding-8B"
     depends_on:
       postgres:
         condition: service_healthy
@@ -150,8 +156,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "ragent...2026"
     volumes:
       - grafana-data:/var/lib/grafana
     networks:

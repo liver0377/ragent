@@ -20,6 +20,7 @@ export interface ChatCallbacks {
 export function chatStream(
   question: string,
   conversationId?: number,
+  knowledgeBaseId?: number,
   callbacks?: ChatCallbacks,
 ): AbortController {
   const controller = new AbortController();
@@ -33,7 +34,8 @@ export function chatStream(
     },
     body: JSON.stringify({
       question,
-      conversation_id: conversationId,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      ...(knowledgeBaseId ? { knowledge_base_id: knowledgeBaseId } : {}),
     }),
     signal: controller.signal,
   })
