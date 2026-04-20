@@ -15,6 +15,7 @@ import {
   deleteKnowledgeBase,
   type KnowledgeBase,
 } from '../api/knowledgeBase';
+import { listDepartments } from '../api/department';
 
 export default function KnowledgePage() {
   const [list, setList] = useState<KnowledgeBase[]>([]);
@@ -24,6 +25,7 @@ export default function KnowledgePage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [form] = Form.useForm();
+  const [deptMap, setDeptMap] = useState<Record<number, string>>({});
 
   const fetchList = async (p = page) => {
     setLoading(true);
@@ -40,6 +42,12 @@ export default function KnowledgePage() {
 
   useEffect(() => {
     fetchList();
+    // 加载部门映射
+    listDepartments().then((depts) => {
+      const map: Record<number, string> = {};
+      depts.forEach((d) => { map[d.id] = d.name; });
+      setDeptMap(map);
+    }).catch(() => {});
   }, [page]);
 
   const onCreate = async () => {
@@ -82,6 +90,16 @@ export default function KnowledgePage() {
       key: 'description',
       ellipsis: true,
       render: (v: string) => v || <Tag>无描述</Tag>,
+    },
+    {
+      title: '所属部门',
+      dataIndex: 'department_id',
+      key: 'department_id',
+      width: 150,
+      render: (v: number | null) => {
+        if (v == null) return <Tag color="default">公共</Tag>;
+        return <Tag color="blue">{deptMap[v] || `部门${v}`}</Tag>;
+      },
     },
     {
       title: '文档数',

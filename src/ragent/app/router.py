@@ -24,7 +24,7 @@ from starlette.responses import StreamingResponse
 
 from ragent.app.deps import CurrentUser, DbSession
 from ragent.common.logging import get_logger
-from ragent.common.models import KnowledgeBase, KnowledgeDocument
+from ragent.common.models import Department, KnowledgeBase, KnowledgeDocument
 from ragent.common.response import Result
 from ragent.common.snowflake import generate_id
 from ragent.common.sse import SSEEvent, create_sse_response, sse_content, sse_finish, sse_meta
@@ -123,6 +123,26 @@ async def chat(
 
 
 # ---------------------------------------------------------------------------
+# 部门权限辅助
+# ---------------------------------------------------------------------------
+
+
+def _check_kb_dept_access(kb: KnowledgeBase, user) -> str | None:
+    """检查用户是否有权访问该知识库。
+
+    admin 可访问所有；普通用户只能访问本部门或未分配部门的 KB。
+    返回 None 表示有权限，否则返回错误消息。
+    """
+    if user.role == "admin":
+        return None
+    if kb.department_id is None:
+        return None
+    if kb.department_id != user.department_id:
+        return f"无权访问知识库 {kb.id}（部门隔离）"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 知识库管理
 # ---------------------------------------------------------------------------
 
@@ -160,11 +180,12 @@ async def create_knowledge_base(
         description=request.description,
         embedding_model=settings.EMBEDDING_MODEL,
         collection_name=collection_name,
+        department_id=current_user.department_id,
     )
     db.add(kb)
     await db.flush()
 
-    logger.info("知识库创建成功: id=%s, name=%s, user=%s", kb_id, request.name, current_user.username)
+    logger.info("知识库创建成功: id=%s, name=%s, dept=%s, user=%s", kb_id, request.name, current_user.department_id, current_user.username)
 
     return Result.success(data={
         "id": kb.id,
@@ -172,6 +193,7 @@ async def create_knowledge_base(
         "description": kb.description,
         "embedding_model": kb.embedding_model,
         "collection_name": kb.collection_name,
+        "department_id": kb.department_id,
         "created_at": kb.created_at.isoformat() if kb.created_at else None,
     })
 
@@ -183,25 +205,29 @@ async def list_knowledge_bases(
     page: int = Query(default=1, ge=1, description="页码"),
     page_size: int = Query(default=20, ge=1, le=100, description="每页数量"),
 ) -> Result[Any]:
-    """获取知识库列表（需认证，分页）。
+    """获取知识库列表（需认证，分页，部门隔离）。
 
-    Args:
-        db: 异步数据库会话。
-        current_user: 当前登录用户。
-        page: 页码（从 1 开始）。
-        page_size: 每页数量。
-
-    Returns:
-        Result 包含知识库列表和分页信息。
+    - admin 用户可查看所有知识库
+    - 普通用户只能查看本部门 + 未分配部门的知识库
     """
+    # 构建基础查询（部门隔离）
+    base_query = select(KnowledgeBase)
+    if current_user.role != "admin":
+        base_query = base_query.where(
+            (KnowledgeBase.department_id == current_user.department_id)
+            | (KnowledgeBase.department_id.is_(None))
+        )
+
     # 查询总数
-    count_result = await db.execute(select(func.count()).select_from(KnowledgeBase))
+    count_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
     total = count_result.scalar() or 0
 
     # 分页查询
     offset = (page - 1) * page_size
     result = await db.execute(
-        select(KnowledgeBase)
+        base_query
         .order_by(KnowledgeBase.created_at.desc())
         .offset(offset)
         .limit(page_size)
@@ -215,6 +241,7 @@ async def list_knowledge_bases(
             "description": kb.description,
             "embedding_model": kb.embedding_model,
             "collection_name": kb.collection_name,
+            "department_id": kb.department_id,
             "created_at": kb.created_at.isoformat() if kb.created_at else None,
             "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
         }
@@ -235,7 +262,7 @@ async def get_knowledge_base(
     db: DbSession,
     current_user: CurrentUser,
 ) -> Result[Any]:
-    """获取知识库详情（需认证）。
+    """获取知识库详情（需认证，部门隔离）。
 
     Args:
         kb_id: 知识库 ID。
@@ -253,6 +280,11 @@ async def get_knowledge_base(
     if kb is None:
         return Result.error(code=404, message=f"知识库 {kb_id} 不存在")
 
+    # 部门权限检查
+    err = _check_kb_dept_access(kb, current_user)
+    if err:
+        return Result.error(code=403, message=err)
+
     # 查询关联的文档数量
     doc_count_result = await db.execute(
         select(func.count())
@@ -267,6 +299,7 @@ async def get_knowledge_base(
         "description": kb.description,
         "embedding_model": kb.embedding_model,
         "collection_name": kb.collection_name,
+        "department_id": kb.department_id,
         "document_count": doc_count,
         "created_at": kb.created_at.isoformat() if kb.created_at else None,
         "updated_at": kb.updated_at.isoformat() if kb.updated_at else None,
@@ -279,9 +312,9 @@ async def delete_knowledge_base(
     db: DbSession,
     current_user: CurrentUser,
 ) -> Result[Any]:
-    """删除知识库（需认证）。
+    """删除知识库（需认证，部门隔离）。
 
-    同时删除关联的文档和分块记录。
+    同时删除关联的文档和分块记录。仅 admin 或同部门用户可删除。
 
     Args:
         kb_id: 知识库 ID。
@@ -298,6 +331,11 @@ async def delete_knowledge_base(
 
     if kb is None:
         return Result.error(code=404, message=f"知识库 {kb_id} 不存在")
+
+    # 部门权限检查
+    err = _check_kb_dept_access(kb, current_user)
+    if err:
+        return Result.error(code=403, message=err)
 
     await db.delete(kb)
 
@@ -351,6 +389,11 @@ async def upload_document(
     kb = kb_result.scalar_one_or_none()
     if kb is None:
         return Result.error(code=404, message=f"知识库 {knowledge_base_id} 不存在")
+
+    # 部门权限检查
+    err = _check_kb_dept_access(kb, current_user)
+    if err:
+        return Result.error(code=403, message=err)
 
     # 确保存储目录存在
     upload_dir = "/app/data/pdfs"
@@ -628,3 +671,30 @@ async def delete_conversation(
 
     logger.info("会话删除: conv_id=%s, user=%s", conv_id, current_user.username)
     return Result.success(data={"message": "会话已删除"})
+
+
+# ---------------------------------------------------------------------------
+# 部门管理
+# ---------------------------------------------------------------------------
+
+
+@router.get("/departments", summary="部门列表")
+async def list_departments(
+    db: DbSession,
+    current_user: CurrentUser,
+) -> Result[Any]:
+    """获取所有部门列表（需认证）。
+
+    Returns:
+        Result 包含部门列表。
+    """
+    result = await db.execute(
+        select(Department).order_by(Department.id)
+    )
+    depts = result.scalars().all()
+
+    items = [
+        {"id": d.id, "name": d.name, "description": d.description}
+        for d in depts
+    ]
+    return Result.success(data=items)

@@ -9,6 +9,7 @@ export interface KnowledgeBase {
   description: string;
   embedding_model: string;
   collection_name: string;
+  department_id: number | null;
   document_count?: number;
   created_at: string | null;
   updated_at: string | null;

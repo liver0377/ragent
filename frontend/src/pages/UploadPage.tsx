@@ -12,8 +12,6 @@ import {
 import { listKnowledgeBases, type KnowledgeBase } from '../api/knowledgeBase';
 import { uploadDocuments, pollTaskUntilDone, type TaskStatus } from '../api/document';
 
-const { Dragger } = UploadOutlined; // antd 没有直接导出，手写拖拽区
-
 const STATUS_MAP: Record<string, { color: string; icon: React.ReactNode }> = {
   PENDING: { color: 'default', icon: <LoadingOutlined /> },
   PROCESSING: { color: 'processing', icon: <LoadingOutlined /> },
